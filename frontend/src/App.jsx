@@ -1207,6 +1207,12 @@ const App = () => {
     setEditingProfileId(null);
   };
 
+  const handleDoneEditProfile = () => {
+    setEditingProfileId(null);
+    setMessage({ type: 'success', text: 'Profile updated successfully' });
+    setTimeout(() => setMessage(null), 3000);
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'uploading': return 'var(--accent)';
@@ -2327,7 +2333,7 @@ const App = () => {
                         </div>
 
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-                          <button type="button" className="btn btn-primary" onClick={handleCloseEditProfile} style={{ padding: '8px 20px', fontSize: '0.85rem' }}>
+                          <button type="button" className="btn btn-primary" onClick={handleDoneEditProfile} style={{ padding: '8px 20px', fontSize: '0.85rem' }}>
                             Done
                           </button>
                         </div>
