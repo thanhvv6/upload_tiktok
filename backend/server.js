@@ -69,6 +69,31 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 if (!fs.existsSync(EXTENSIONS_DIR)) fs.mkdirSync(EXTENSIONS_DIR);
 if (!fs.existsSync(DUMMY_VIDEOS_DIR)) fs.mkdirSync(DUMMY_VIDEOS_DIR);
 
+// Clean stale Singleton lock files that prevent Chromium from launching
+// (left behind after crashes or force-kills)
+function cleanSingletonLock(userDataDir) {
+    const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+    lockFiles.forEach(file => {
+        const filePath = path.join(userDataDir, file);
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log(`[Cleanup] Removed stale lock: ${filePath}`);
+            }
+        } catch (e) {
+            // ignore - file might not exist or be in use
+        }
+    });
+}
+
+// Wrapper around chromium.launchPersistentContext that cleans stale locks first
+async function launchBrowser(userDataDir, options) {
+    if (fs.existsSync(userDataDir)) {
+        cleanSingletonLock(userDataDir);
+    }
+    return chromium.launchPersistentContext(userDataDir, options);
+}
+
 // Init SQLite DB
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
@@ -2308,7 +2333,7 @@ app.post('/api/open-profile', async (req, res) => {
             }
         }
 
-        const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+        const browser = await launchBrowser(userDataDir, browserOptions);
         manualBrowsers.set(profileId, browser);
 
         browser.on('close', () => {
@@ -2347,7 +2372,7 @@ async function changeAvatar(profile, avatarImage) {
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchBrowser(userDataDir, browserOptions);
     avatarChangingProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
 
@@ -2549,7 +2574,7 @@ async function addFavoriteMusic(profile, searchTerm) {
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchBrowser(userDataDir, browserOptions);
     addingFavoriteMusicProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
 
@@ -3279,7 +3304,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         }
     }
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchBrowser(userDataDir, browserOptions);
 
     const log = (msg) => {
         const entry = `[${new Date().toISOString()}] [${profile.name}] ${msg}\n`;
@@ -4179,7 +4204,7 @@ async function runEngageSession(profile) {
         }
     }
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchBrowser(userDataDir, browserOptions);
 
     const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
     engagingProfiles.set(profileId, session);
@@ -4943,7 +4968,7 @@ async function runTikTokLogin(profile) {
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchBrowser(userDataDir, browserOptions);
     const session = {
         browser,
         stop: false,
