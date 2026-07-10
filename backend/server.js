@@ -523,8 +523,8 @@ app.post('/api/profiles/import-csv', (req, res) => {
         const insertProfile = db.prepare(`
             INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule,
                 group_id, video_folder, set_music, upload_count, needs_render, remove_title,
-                need_content_check, account_id, pass, email, pass_email, cookies)
-            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?, ?)
+                need_content_check, account_id, pass, email, pass_email, cookies, music_search)
+            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?, ?, ?)
         `);
 
         const existingNames = new Set(
@@ -556,6 +556,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
             let email = (row.email || '').trim() || null;
             let passEmail = (row.pass_email || row.pass_email_password || '').trim() || null;
             let cookies = (row.cookies || '').trim() || null;
+            let musicSearch = (row.music_search || row.favorite_music || row.music || '').trim() || null;
 
             if (accountId && accountId.includes('|') && !pass && !email && !passEmail) {
                 const parts = accountId.split('|');
@@ -575,7 +576,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
                 if (videoFolder) {
                     fs.mkdirSync(videoFolder, { recursive: true });
                 }
-                insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail, cookies);
+                insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail, cookies, musicSearch);
                 existingNames.add(profileName.toLowerCase());
                 results.imported++;
             } catch (e) {

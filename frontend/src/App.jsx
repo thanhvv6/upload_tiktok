@@ -1930,7 +1930,7 @@ const App = () => {
                             File CSV cần có các cột:
                           </p>
                           <p style={{ fontSize: '0.75rem', color: 'var(--accent)', fontFamily: 'monospace', marginBottom: '16px' }}>
-                            profile_name, group_name, account_id, pass, email, pass_email, cookies
+                            profile_name, group_name, account_id, pass, email, pass_email, cookies, music_search
                           </p>
                           <input
                             type="file"
