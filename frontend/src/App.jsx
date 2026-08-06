@@ -1566,7 +1566,7 @@ const App = () => {
                     )}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexShrink: 0, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexShrink: 1, flexWrap: 'wrap' }}>
                   <button
                     className="btn btn-secondary"
                     onClick={() => setIsCreateProfileModalOpen(true)}
