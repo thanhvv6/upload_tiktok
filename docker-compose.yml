@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: tiktok
+      POSTGRES_USER: tiktok
+      POSTGRES_PASSWORD: tiktok
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tiktok -d tiktok"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      target: backend
+    ports:
+      - "3010:3010"
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: tiktok
+      DB_USER: tiktok
+      DB_PASSWORD: tiktok
+    volumes:
+      - ./backend/dummy_videos:/app/dummy_videos
+      - ./backend/uploads:/app/uploads
+      - ./backend/profiles:/app/profiles
+      - ./backend/concat_videos:/app/concat_videos
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      target: frontend
+    ports:
+      - "3009:3009"
+    depends_on:
+      - app
+
+volumes:
+  pgdata:
