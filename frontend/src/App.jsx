@@ -2499,10 +2499,28 @@ const App = () => {
                                 style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
                               />
                               <div style={{ display: 'flex', flexDirection: 'column' }}>
-                                <span style={{ fontSize: '0.82rem', fontWeight: '700' }}>Lên lịch nối tiếp (10p)</span>
-                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>V1: Public, V2: Mặc định, V3+: +10 phút</span>
+                                <span style={{ fontSize: '0.82rem', fontWeight: '700' }}>Lên lịch nối tiếp</span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>V1: Public, V2: Mặc định, V3+: +{(p.schedule_interval || 5)} phút</span>
                               </div>
                             </label>
+                            {p.auto_increment_schedule === 1 && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px', paddingLeft: '24px' }}>
+                                <span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)' }}>Khoảng cách:</span>
+                                {[5, 10, 15, 20].map((mins) => (
+                                  <label key={mins} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                                    <input
+                                      type="radio"
+                                      name={`schedule_interval_${p.id}`}
+                                      value={mins}
+                                      checked={(p.schedule_interval || 5) === mins}
+                                      onChange={() => updateProfileScheduleInterval(p.id, mins)}
+                                      style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                                    />
+                                    {mins} phút
+                                  </label>
+                                ))}
+                              </div>
+                            )}
                           </div>
 
                           {/* Render video bypass */}
@@ -2520,6 +2538,25 @@ const App = () => {
                                   Render video bypass
                                 </span>
                                 <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: xử lý lách bản quyền qua render.py. Tắt: giữ nguyên video gốc.</span>
+                              </div>
+                            </label>
+                          </div>
+
+                          {/* Render concat video */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                              <input
+                                type="checkbox"
+                                checked={p.render_concat_video !== 0 && p.render_concat_video !== undefined}
+                                onChange={(e) => updateProfileRenderConcatVideo(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: '700' }}>
+                                  <Link size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                                  Render concat video
+                                </span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: nối video tải về với 1 video bất kỳ trong thư mục concat_videos.</span>
                               </div>
                             </label>
                           </div>
@@ -2895,34 +2932,6 @@ const App = () => {
                 )}
               </AnimatePresence>
 
-              {/* Edit Profile Modal */}
-              <EditProfileModal
-                isOpen={editingProfileId !== null}
-                onClose={handleCloseEditProfile}
-                profile={editingProfile}
-                groups={groups}
-                getStatusColor={getStatusColor}
-                onUpdateGroup={updateProfileGroup}
-                onUpdateFolder={updateProfileFolder}
-                onSelectFolder={handleSelectFolder}
-                onUpdateProxy={updateProfileProxy}
-                onUpdateChannelIds={updateProfileChannelIds}
-                onUpdateSchedule={updateProfileSchedule}
-                onUpdateSchedules={updateProfileSchedules}
-                onUpdateSetMusic={updateProfileSetMusic}
-                onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
-                onUpdateScheduleInterval={updateProfileScheduleInterval}
-                onUpdateUploadCount={updateProfileUploadCount}
-                onUpdateNeedsRender={updateProfileNeedsRender}
-                onUpdateRenderConcatVideo={updateProfileRenderConcatVideo}
-                onUpdateRenderVideoLong={updateProfileRenderVideoLong}
-                onUpdateRemoveTitle={updateProfileRemoveTitle}
-                onUpdateNeedContentCheck={updateProfileNeedContentCheck}
-                onSelectAvatar={handleSelectAvatar}
-                selectedAvatarPath={editingProfileId ? (avatarSelections[editingProfileId] || '') : ''}
-                musicSearchTerm={editingProfileId ? (musicSearchTerms[editingProfileId] || '') : ''}
-                onUpdateMusicSearchTerm={handleUpdateMusicSearchTerm}
-              />
             </section>
           ) : activeTab === 'groups' ? (
             <section>
