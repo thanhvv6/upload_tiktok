@@ -1566,7 +1566,7 @@ const App = () => {
                     )}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexShrink: 0, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexShrink: 1, flexWrap: 'wrap' }}>
                   <button
                     className="btn btn-secondary"
                     onClick={() => setIsCreateProfileModalOpen(true)}
@@ -1756,72 +1756,7 @@ const App = () => {
                     );
                   })()}
 
-                  {/* Clear Trash button */}
-                  <button
-                    className="btn"
-                    onClick={clearTrash}
-                    disabled={selectedForRun.size === 0}
-                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần dọn rác' : 'Xoá cache/thùng rác của các profile đã chọn để tiết kiệm dung lượng'}
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(239, 155, 68, 0.08)',
-                      color: '#F59E0B',
-                      border: '1px solid rgba(245, 158, 11, 0.25)',
-                      fontWeight: '700',
-                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
-                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    <Trash2 size={18} />
-                    Clear Trash
-                  </button>
-
-                  {/* Xóa Profile button */}
-                  <button
-                    className="btn"
-                    onClick={deleteSelectedProfiles}
-                    disabled={selectedForRun.size === 0}
-                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần xóa' : 'Xoá các profile đã chọn và folder của chúng'}
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(239, 68, 68, 0.08)',
-                      color: '#EF4444',
-                      border: '1px solid rgba(239, 68, 68, 0.25)',
-                      fontWeight: '700',
-                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
-                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    <Trash2 size={18} />
-                    Xóa Profile
-                  </button>
                 </div>
-              </div>
-
-              {/* Limit upload row */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', height: '38px', padding: '0 12px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)', userSelect: 'none', whiteSpace: 'nowrap' }}>
-                  <input
-                    type="checkbox"
-                    checked={limitUploads}
-                    onChange={(e) => setLimitUploads(e.target.checked)}
-                    style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
-                  />
-                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'white' }}>Giới hạn upload</span>
-                </label>
-                {limitUploads && (
-                  <>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Số video</span>
-                    <input
-                      type="number"
-                      className="input"
-                      style={{ padding: '8px 10px', height: '38px', width: '64px' }}
-                      min="1"
-                      value={uploadLimitCount}
-                      onChange={(e) => setUploadLimitCount(parseInt(e.target.value) || 1)}
-                    />
-                  </>
-                )}
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px', alignItems: 'start' }}>
