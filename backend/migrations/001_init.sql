@@ -1,6 +1,5 @@
--- 001_init.sql — Complete PostgreSQL schema (consolidates all SQLite migrations)
--- Run with: psql -U tiktok -d tiktok -f migrations/001_init.sql
-
+-- 001_init.sql: Full PostgreSQL schema
+-- profiles: main profile table with all columns
 CREATE TABLE IF NOT EXISTS profiles (
     id              TEXT PRIMARY KEY,
     name            TEXT UNIQUE,
@@ -30,17 +29,13 @@ CREATE TABLE IF NOT EXISTS profiles (
     schedule_interval INTEGER DEFAULT 5
 );
 
+-- config: key-value settings
 CREATE TABLE IF NOT EXISTS config (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
 
-CREATE TABLE IF NOT EXISTS groups (
-    id         TEXT PRIMARY KEY,
-    name       TEXT UNIQUE NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
+-- profile_schedules: schedule time slots per profile
 CREATE TABLE IF NOT EXISTS profile_schedules (
     id         SERIAL PRIMARY KEY,
     profile_id TEXT,
@@ -48,8 +43,9 @@ CREATE TABLE IF NOT EXISTS profile_schedules (
     FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE CASCADE
 );
 
--- Indexes for common queries
-CREATE INDEX IF NOT EXISTS idx_profiles_status ON profiles(status);
-CREATE INDEX IF NOT EXISTS idx_profiles_group_id ON profiles(group_id);
-CREATE INDEX IF NOT EXISTS idx_profiles_is_scheduled ON profiles(is_scheduled);
-CREATE INDEX IF NOT EXISTS idx_profile_schedules_profile_id ON profile_schedules(profile_id);
+-- groups: profile groups
+CREATE TABLE IF NOT EXISTS groups (
+    id         TEXT PRIMARY KEY,
+    name       TEXT UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
