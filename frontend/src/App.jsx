@@ -15,6 +15,8 @@ import {
   ShieldCheck,
   Zap,
   FolderOpen,
+  FolderArchive,
+  Download,
   Link,
   ExternalLink,
   Edit3,
@@ -360,6 +362,7 @@ const App = () => {
   const [newProfileVideoFolder, setNewProfileVideoFolder] = useState('');
   const [newProfileChannelIds, setNewProfileChannelIds] = useState('');
   const [newProfileNeedsRender, setNewProfileNeedsRender] = useState(true);
+  const [newProfileRenderConcatVideo, setNewProfileRenderConcatVideo] = useState(false);
   const [newProfileRemoveTitle, setNewProfileRemoveTitle] = useState(true);
   const [newProfileNeedContentCheck, setNewProfileNeedContentCheck] = useState(true);
   const [newProfileRenderVideoLong, setNewProfileRenderVideoLong] = useState(false);
@@ -388,11 +391,17 @@ const App = () => {
   const [limitUploads, setLimitUploads] = useState(false);
   const [uploadLimitCount, setUploadLimitCount] = useState(1);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [isImportFolderModalOpen, setIsImportFolderModalOpen] = useState(false);
+  const [isExportFolderModalOpen, setIsExportFolderModalOpen] = useState(false);
   const [importCsvText, setImportCsvText] = useState('');
   const [importFileName, setImportFileName] = useState('');
   const [importResults, setImportResults] = useState(null);
   const [isImporting, setIsImporting] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [importFolderPath, setImportFolderPath] = useState('');
+  const [exportFolderPath, setExportFolderPath] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportResults, setExportResults] = useState(null);
   const [editingProfileId, setEditingProfileId] = useState(null);
 
 
@@ -546,6 +555,7 @@ const App = () => {
     setNewProfileVideoFolder('');
     setNewProfileChannelIds('');
     setNewProfileNeedsRender(true);
+    setNewProfileRenderConcatVideo(false);
     setNewProfileRemoveTitle(true);
     setNewProfileNeedContentCheck(true);
     setNewProfileRenderVideoLong(false);
@@ -570,6 +580,7 @@ const App = () => {
         video_folder: newProfileVideoFolder.trim() || null,
         channel_ids: newProfileChannelIds.trim() || null,
         needs_render: newProfileNeedsRender,
+        render_concat_video: newProfileRenderConcatVideo,
         remove_title: newProfileRemoveTitle,
         need_content_check: newProfileNeedContentCheck,
         render_video_long: newProfileRenderVideoLong,
@@ -621,12 +632,85 @@ const App = () => {
     }
   };
 
+  const handleImportFolder = async () => {
+    if (!importFolderPath.trim()) {
+      setMessage({ type: 'error', text: 'Vui lòng nhập đường dẫn thư mục' });
+      return;
+    }
+    setIsImporting(true);
+    setImportResults(null);
+    try {
+      const res = await axios.post('/api/profiles/import-folder', { folderPath: importFolderPath });
+      setImportResults(res.data);
+      await fetchData();
+      setMessage({
+        type: 'success',
+        text: `Import xong: ${res.data.imported} profiles đã tạo, ${res.data.skipped} bỏ qua`
+      });
+      setTimeout(() => setMessage(null), 5000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi import thư mục' });
+      setImportResults(null);
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   const closeImportModal = () => {
     if (isImporting) return;
     setIsImportModalOpen(false);
     setImportCsvText('');
     setImportFileName('');
     setImportResults(null);
+  };
+
+  const closeImportFolderModal = () => {
+    if (isImporting) return;
+    setIsImportFolderModalOpen(false);
+    setImportFolderPath('');
+    setImportResults(null);
+  };
+
+  const handleExportFolder = async (downloadZip = false) => {
+    if (selectedForRun.size === 0) {
+      setMessage({ type: 'error', text: 'Vui lòng chọn ít nhất 1 profile để export' });
+      return;
+    }
+    setIsExporting(true);
+    setExportResults(null);
+    try {
+      const res = await axios.post('/api/profiles/export-folder', {
+        profileIds: Array.from(selectedForRun),
+        exportPath: exportFolderPath,
+        downloadZip
+      });
+      setExportResults(res.data);
+      if (downloadZip && res.data.downloadUrl) {
+        const link = document.createElement('a');
+        link.href = res.data.downloadUrl;
+        link.setAttribute('download', '');
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+      setMessage({
+        type: 'success',
+        text: `Export thành công ${res.data.total} profiles (${res.data.exportedCookies} có cookie)`
+      });
+      setTimeout(() => setMessage(null), 5000);
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi export thư mục' });
+      setExportResults(null);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const closeExportFolderModal = () => {
+    if (isExporting) return;
+    setIsExportFolderModalOpen(false);
+    setExportFolderPath('');
+    setExportResults(null);
   };
 
   const deleteProfile = async (id) => {
@@ -837,6 +921,19 @@ const App = () => {
     setTimeout(() => setMessage(null), 5000);
   };
 
+  const clearDebugFiles = async () => {
+    if (!window.confirm('Xóa toàn bộ file debug PNG và dọn automation.log?\nHành động này không ảnh hưởng đến profile hay cookie.')) return;
+    setMessage({ type: 'info', text: 'Đang xóa file debug...' });
+    try {
+      const res = await axios.post('/api/system/clear-debug');
+      const { freedMB, deletedFiles } = res.data;
+      setMessage({ type: 'success', text: `Đã xóa ${deletedFiles} file debug PNG + dọn log → giải phóng ${freedMB} MB` });
+    } catch (err) {
+      setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi xóa debug' });
+    }
+    setTimeout(() => setMessage(null), 5000);
+  };
+
   const startBulkEngage = async () => {
     const profileIds = [...selectedForRun];
     if (profileIds.length === 0) {
@@ -999,6 +1096,24 @@ const App = () => {
     }
   };
 
+  const updateProfileRenderConcatVideo = async (id, enabled) => {
+    if (processingRef.current.has(id)) return;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, render_concat_video: enabled ? 1 : 0 } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { render_concat_video: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
   const updateProfileRenderVideoLong = async (id, enabled) => {
     if (processingRef.current.has(id)) return;
     setProfiles((prev) =>
@@ -1061,6 +1176,26 @@ const App = () => {
     processingRef.current.add(id);
     try {
       await axios.patch(`/api/profiles/${id}`, { auto_increment_schedule: enabled });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      await fetchData();
+    } finally {
+      processingRef.current.delete(id);
+    }
+  };
+
+  const updateProfileScheduleInterval = async (id, interval) => {
+    if (processingRef.current.has(id)) return;
+    const intervalNum = Number(interval);
+    const intervalVal = [5, 10, 15, 20].includes(intervalNum) ? intervalNum : 5;
+    setProfiles((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, schedule_interval: intervalVal } : p))
+    );
+    processingRef.current.add(id);
+    try {
+      await axios.patch(`/api/profiles/${id}`, { schedule_interval: intervalVal });
       await new Promise((resolve) => setTimeout(resolve, 500));
       await fetchData();
     } catch (err) {
@@ -1448,7 +1583,108 @@ const App = () => {
                     <Upload size={18} />
                     Import CSV
                   </button>
-
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => setIsImportFolderModalOpen(true)}
+                    style={{ gap: '10px' }}
+                  >
+                    <FolderOpen size={18} />
+                    Import Folder
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => setIsExportFolderModalOpen(true)}
+                    disabled={selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên các profile cần export' : 'Export danh sách profile đã chọn thành thư mục/ZIP theo format TikTok_Export'}
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(59, 130, 246, 0.1)',
+                      color: '#3B82F6',
+                      border: '1px solid rgba(59, 130, 246, 0.3)',
+                      fontWeight: '700',
+                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
+                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <Download size={18} />
+                    Export Folder ({selectedForRun.size})
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={clearTrash}
+                    disabled={selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần dọn rác' : 'Xoá cache/thùng rác của các profile đã chọn để tiết kiệm dung lượng'}
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(239, 155, 68, 0.08)',
+                      color: '#F59E0B',
+                      border: '1px solid rgba(245, 158, 11, 0.25)',
+                      fontWeight: '700',
+                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
+                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    Clear Trash
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={clearDebugFiles}
+                    title="Xóa file debug PNG và dọn automation.log để giải phóng dung lượng (~300-600MB)"
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(139, 92, 246, 0.08)',
+                      color: '#8B5CF6',
+                      border: '1px solid rgba(139, 92, 246, 0.25)',
+                      fontWeight: '700',
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    Clear Debug
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={deleteSelectedProfiles}
+                    disabled={selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần xóa' : 'Xoá các profile đã chọn và folder của chúng'}
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(239, 68, 68, 0.08)',
+                      color: '#EF4444',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      fontWeight: '700',
+                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
+                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    Xóa Profile
+                  </button>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    Giới hạn upload
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', height: '40px', padding: '0 12px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)', userSelect: 'none' }}>
+                      <input
+                        type="checkbox"
+                        checked={limitUploads}
+                        onChange={(e) => setLimitUploads(e.target.checked)}
+                        style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'white' }}>Bật</span>
+                    </label>
+                  </label>
+                  {limitUploads && (
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '80px' }}>
+                      Số video
+                      <input
+                        type="number"
+                        className="input"
+                        style={{ padding: '10px 12px', height: '40px' }}
+                        min="1"
+                        value={uploadLimitCount}
+                        onChange={(e) => setUploadLimitCount(parseInt(e.target.value) || 1)}
+                      />
+                    </label>
+                  )}
                   <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '140px' }}>
                     Kiểu chạy
                     <select
@@ -1804,6 +2040,22 @@ const App = () => {
 
                         <div className="input-group">
                           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                            <input
+                              type="checkbox"
+                              checked={newProfileRenderConcatVideo}
+                              onChange={(e) => setNewProfileRenderConcatVideo(e.target.checked)}
+                              disabled={isCreatingProfile || isSelectingFolder}
+                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Render concat video</span>
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Nối video tải về với 1 video ngẫu nhiên trong thư mục concat_videos.</span>
+                            </div>
+                          </label>
+                        </div>
+
+                        <div className="input-group" style={{ marginBottom: '12px' }}>
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
                             <input
                               type="checkbox"
                               checked={newProfileRemoveTitle}
@@ -2344,6 +2596,333 @@ const App = () => {
               </AnimatePresence>
 
 
+              {/* Import Folder Modal */}
+              <AnimatePresence>
+                {isImportFolderModalOpen && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    style={{
+                      position: 'fixed',
+                      inset: 0,
+                      background: 'rgba(15, 23, 42, 0.7)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      zIndex: 1000,
+                      padding: '24px'
+                    }}
+                    onClick={() => closeImportFolderModal()}
+                  >
+                    <motion.div
+                      initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                      className="glass"
+                      style={{ width: '100%', maxWidth: '520px', padding: '24px', borderRadius: '20px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <div>
+                          <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Import Export Folder</h3>
+                          <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
+                            Import danh sách tài khoản kèm cookie từ thư mục export
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => closeImportFolderModal()}
+                          disabled={isImporting}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: isImporting ? 'not-allowed' : 'pointer',
+                            opacity: isImporting ? 0.45 : 1
+                          }}
+                          aria-label="Close import folder modal"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'grid', gap: '16px' }}>
+                        <div style={{ display: 'grid', gap: '8px' }}>
+                          <label style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                            Đường dẫn thư mục tuyệt đối trên server:
+                          </label>
+                          <input
+                            type="text"
+                            placeholder="Ví dụ: D:\TIKTOK\upload_tiktok\TikTok_Export_checked_1TK_20260724"
+                            value={importFolderPath}
+                            onChange={(e) => setImportFolderPath(e.target.value)}
+                            disabled={isImporting}
+                            style={{
+                              padding: '12px',
+                              borderRadius: '10px',
+                              background: 'rgba(0,0,0,0.3)',
+                              color: 'white',
+                              border: '1px solid var(--border)',
+                              fontSize: '0.85rem',
+                              width: '100%',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+                            * Thư mục này phải chứa file <code>config.json</code> và thư mục con <code>cookies/</code> chứa các file <code>.json</code> cookie.<br/>
+                            * Tài khoản nào không có cookie tương ứng sẽ bị tự động bỏ qua.
+                          </p>
+                        </div>
+
+                        {importResults && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            style={{
+                              padding: '16px',
+                              borderRadius: '12px',
+                              background: importResults.errors.length > 0
+                                ? 'rgba(234, 179, 8, 0.08)'
+                                : 'rgba(16, 185, 129, 0.08)',
+                              border: `1px solid ${importResults.errors.length > 0
+                                ? 'rgba(234, 179, 8, 0.25)'
+                                : 'rgba(16, 185, 129, 0.25)'}`
+                            }}
+                          >
+                            <div style={{ display: 'flex', gap: '20px', marginBottom: importResults.errors.length > 0 ? '12px' : 0 }}>
+                              <span style={{ fontSize: '0.85rem', color: 'var(--success)' }}>
+                                Đã import: <strong>{importResults.imported}</strong>
+                              </span>
+                              <span style={{ fontSize: '0.85rem', color: '#EAB308' }}>
+                                Bỏ qua: <strong>{importResults.skipped}</strong>
+                              </span>
+                            </div>
+                            {importResults.errors.length > 0 && (
+                              <div style={{
+                                maxHeight: '120px',
+                                overflowY: 'auto',
+                                fontSize: '0.75rem',
+                                color: '#EAB308',
+                                lineHeight: 1.5
+                              }}>
+                                {importResults.errors.slice(0, 15).map((err, i) => (
+                                  <div key={i}>{err}</div>
+                                ))}
+                                {importResults.errors.length > 15 && (
+                                  <div>... và {importResults.errors.length - 15} lỗi khác</div>
+                                )}
+                              </div>
+                            )}
+                          </motion.div>
+                        )}
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+                          <button type="button" className="btn btn-secondary" onClick={() => closeImportFolderModal()} disabled={isImporting}>
+                            Đóng
+                          </button>
+                          <button
+                            className="btn btn-primary"
+                            onClick={handleImportFolder}
+                            disabled={isImporting || !importFolderPath.trim()}
+                            style={{ gap: '8px' }}
+                          >
+                            {isImporting ? (
+                              <>
+                                <RefreshCw size={16} className="animate-pulse" />
+                                Đang import...
+                              </>
+                            ) : (
+                              <>
+                                <Upload size={16} />
+                                Import
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Export Folder Modal */}
+              <AnimatePresence>
+                {isExportFolderModalOpen && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    style={{
+                      position: 'fixed',
+                      inset: 0,
+                      background: 'rgba(15, 23, 42, 0.7)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      zIndex: 1000,
+                      padding: '24px'
+                    }}
+                    onClick={() => closeExportFolderModal()}
+                  >
+                    <motion.div
+                      initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                      className="glass"
+                      style={{ width: '100%', maxWidth: '540px', padding: '24px', borderRadius: '20px' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <div>
+                          <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Export Folder (Cookie Login)</h3>
+                          <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>
+                            Xuất {selectedForRun.size} profile đã chọn thành thư mục chuẩn format TikTok_Export
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => closeExportFolderModal()}
+                          disabled={isExporting}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: isExporting ? 'not-allowed' : 'pointer',
+                            opacity: isExporting ? 0.45 : 1
+                          }}
+                          aria-label="Close export folder modal"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'grid', gap: '16px' }}>
+                        <div style={{ display: 'grid', gap: '8px' }}>
+                          <label style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                            Đường dẫn thư mục xuất tuyệt đối (Tùy chọn, để trống sẽ tự tạo thư mục mới):
+                          </label>
+                          <input
+                            type="text"
+                            placeholder={`D:\\TIKTOK\\upload_tiktok\\TikTok_Export_selected_${selectedForRun.size}TK`}
+                            value={exportFolderPath}
+                            onChange={(e) => setExportFolderPath(e.target.value)}
+                            disabled={isExporting}
+                            style={{
+                              padding: '12px',
+                              borderRadius: '10px',
+                              background: 'rgba(0,0,0,0.3)',
+                              color: 'white',
+                              border: '1px solid var(--border)',
+                              fontSize: '0.85rem',
+                              width: '100%',
+                              boxSizing: 'border-box'
+                            }}
+                          />
+                          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: '1.4' }}>
+                            * Kết quả xuất bao gồm file <code>config.json</code>, <code>archive.json</code> và thư mục <code>cookies/</code> chứa cookie JSON từng tài khoản.<br/>
+                            * Thư mục này dùng để import trực tiếp sang máy khác thông qua nút <b>Import Folder</b>.
+                          </p>
+                        </div>
+
+                        {exportResults && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            style={{
+                              padding: '16px',
+                              borderRadius: '12px',
+                              background: 'rgba(34, 197, 94, 0.08)',
+                              border: '1px solid rgba(34, 197, 94, 0.25)',
+                              fontSize: '0.85rem'
+                            }}
+                          >
+                            <div style={{ fontWeight: '700', color: '#4ADE80', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <CheckCircle2 size={16} />
+                              Export hoàn tất!
+                            </div>
+                            <div style={{ display: 'grid', gap: '4px', color: 'var(--text-muted)' }}>
+                              <div>• Tổng profile đã chọn: <b>{exportResults.total}</b></div>
+                              <div>• Cookie đã ghi ra file JSON: <b>{exportResults.exportedCookies}</b></div>
+                              {exportResults.missingCookies > 0 && (
+                                <div style={{ color: '#FBBF24' }}>
+                                  • Profile chưa có cookie trong DB: <b>{exportResults.missingCookies}</b>
+                                </div>
+                              )}
+                              <div style={{ marginTop: '6px', wordBreak: 'break-all' }}>
+                                • Thư mục: <code style={{ color: '#60A5FA' }}>{exportResults.exportPath}</code>
+                              </div>
+                            </div>
+                          </motion.div>
+                        )}
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={() => closeExportFolderModal()}
+                            disabled={isExporting}
+                          >
+                            Đóng
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={() => handleExportFolder(false)}
+                            disabled={isExporting || selectedForRun.size === 0}
+                            style={{ gap: '8px' }}
+                          >
+                            <FolderArchive size={16} />
+                            {isExporting ? 'Đang export...' : 'Xuất ra Thư mục'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={() => handleExportFolder(true)}
+                            disabled={isExporting || selectedForRun.size === 0}
+                            style={{
+                              gap: '8px',
+                              background: 'linear-gradient(135deg, #3B82F6 0%, #2563EB 100%)'
+                            }}
+                          >
+                            <Download size={16} />
+                            {isExporting ? 'Đang export...' : 'Xuất & Tải .ZIP'}
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Edit Profile Modal */}
+              <EditProfileModal
+                isOpen={editingProfileId !== null}
+                onClose={handleCloseEditProfile}
+                profile={editingProfile}
+                groups={groups}
+                getStatusColor={getStatusColor}
+                onUpdateGroup={updateProfileGroup}
+                onUpdateFolder={updateProfileFolder}
+                onSelectFolder={handleSelectFolder}
+                onUpdateProxy={updateProfileProxy}
+                onUpdateChannelIds={updateProfileChannelIds}
+                onUpdateSchedule={updateProfileSchedule}
+                onUpdateSchedules={updateProfileSchedules}
+                onUpdateSetMusic={updateProfileSetMusic}
+                onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
+                onUpdateScheduleInterval={updateProfileScheduleInterval}
+                onUpdateUploadCount={updateProfileUploadCount}
+                onUpdateNeedsRender={updateProfileNeedsRender}
+                onUpdateRenderConcatVideo={updateProfileRenderConcatVideo}
+                onUpdateRenderVideoLong={updateProfileRenderVideoLong}
+                onUpdateRemoveTitle={updateProfileRemoveTitle}
+                onUpdateNeedContentCheck={updateProfileNeedContentCheck}
+                onSelectAvatar={handleSelectAvatar}
+                selectedAvatarPath={editingProfileId ? (avatarSelections[editingProfileId] || '') : ''}
+                musicSearchTerm={editingProfileId ? (musicSearchTerms[editingProfileId] || '') : ''}
+                onUpdateMusicSearchTerm={handleUpdateMusicSearchTerm}
+              />
             </section>
           ) : activeTab === 'groups' ? (
             <section>

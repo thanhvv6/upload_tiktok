@@ -142,14 +142,13 @@ def render_static_mask_overlay(
 
     # 2. Build Effect Filters
     angle = random.uniform(-1.5, 1.5)
-    zoom = round(random.uniform(1.05, 1.12), 2)
+    zoom = round(random.uniform(1.05, 1.20), 2)
     
-    # Base effects: Zoom, Tilt, Color, Periodic Flip
+    # Base effects: Zoom, Color, Periodic Flip
     # We use a robust scale/crop to ensure 1080:1920 output regardless of input size
     v_effects = (
-        f"[vconcat]scale=1668:2966:force_original_aspect_ratio=increase,crop=1668:2966,"
-        f"scale=iw*{zoom}:-1,crop=1668:2966,"
-        f"rotate={angle}*PI/180:fillcolor=black@0,crop=1080:1920,"
+        f"[vconcat]scale={TARGET_W}*{zoom}:-1,"
+        f"crop={TARGET_W}:{TARGET_H},"
         "eq=saturation=1.3:contrast=1.1,"
         "hflip=enable='between(mod(t,5),2.5,5)',"
         "format=yuv420p[vfinal]"

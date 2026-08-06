@@ -30,8 +30,10 @@ const EditProfileModal = ({
   onUpdateSchedules,
   onUpdateSetMusic,
   onUpdateAutoIncrementSchedule,
+  onUpdateScheduleInterval,
   onUpdateUploadCount,
   onUpdateNeedsRender,
+  onUpdateRenderConcatVideo,
   onUpdateRemoveTitle,
   onUpdateNeedContentCheck,
   onUpdateRenderVideoLong,
@@ -297,18 +299,39 @@ const EditProfileModal = ({
 
               {/* Auto Increment Schedule */}
               <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
-                  <input
-                    type="checkbox"
-                    checked={profile.auto_increment_schedule === 1}
-                    onChange={(e) => onUpdateAutoIncrementSchedule(profile.id, e.target.checked)}
-                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
-                  />
-                  <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Lên lịch nối tiếp (10p)</span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>V1: Public, V2: Mặc định, V3+: +10 phút</span>
-                  </div>
-                </label>
+                <div style={{ padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={profile.auto_increment_schedule === 1}
+                      onChange={(e) => onUpdateAutoIncrementSchedule(profile.id, e.target.checked)}
+                      style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                    />
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Lên lịch nối tiếp</span>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>V1: Public, V2: Mặc định, V3+: +{(profile.schedule_interval || 5)} phút</span>
+                    </div>
+                  </label>
+
+                  {profile.auto_increment_schedule === 1 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginTop: '10px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingLeft: '28px' }}>
+                      <span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)' }}>Khoảng cách:</span>
+                      {[5, 10, 15, 20].map((mins) => (
+                        <label key={mins} style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                          <input
+                            type="radio"
+                            name={`schedule_interval_${profile.id}`}
+                            value={mins}
+                            checked={(profile.schedule_interval || 5) === mins}
+                            onChange={() => onUpdateScheduleInterval && onUpdateScheduleInterval(profile.id, mins)}
+                            style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                          />
+                          {mins} phút
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Render bypass */}
@@ -322,11 +345,32 @@ const EditProfileModal = ({
                   />
                   <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
                     <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
-                      <Zap size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                       <Zap size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
                       Render video bypass
                     </span>
                     <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                       Bật: xử lý lách bản quyền qua render.py. Tắt: giữ nguyên video gốc.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Render concat video */}
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                  <input
+                    type="checkbox"
+                    checked={profile.render_concat_video !== 0 && profile.render_concat_video !== undefined}
+                    onChange={(e) => onUpdateRenderConcatVideo(profile.id, e.target.checked)}
+                    style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', fontWeight: '700' }}>
+                      <Link size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                      Render concat video
+                    </span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                      Bật: nối video tải về với 1 video bất kỳ trong thư mục concat_videos.
                     </span>
                   </div>
                 </label>

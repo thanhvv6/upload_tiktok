@@ -1,26 +1,28 @@
-const TEN_MINUTES_IN_MS = 10 * 60 * 1000;
-const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
-
 const pad = (value) => String(value).padStart(2, '0');
 
-export function computeNextScheduledTime({ index, lastScheduledTime, now = new Date() }) {
+export function computeNextScheduledTime({ index, lastScheduledTime, intervalMinutes = 10, now = new Date() }) {
     if (index < 3) return null;
+    const stepMin = Number(intervalMinutes) === 5 ? 5 : 10;
+    const stepMs = stepMin * 60 * 1000;
+    const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
 
     const baseTime = index === 3 || !lastScheduledTime
         ? new Date(now.getTime() + TWENTY_MINUTES_IN_MS)
-        : new Date(lastScheduledTime.getTime() + TEN_MINUTES_IN_MS);
+        : new Date(lastScheduledTime.getTime() + stepMs);
 
-    return new Date(Math.ceil(baseTime.getTime() / TEN_MINUTES_IN_MS) * TEN_MINUTES_IN_MS);
+    return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
 }
 
-export function computeAutoIncrementTime({ lastScheduledTime, now = new Date() }) {
-    // If we have a last time, just add 5 minutes
-    // If not, we start from now + 20 minutes (conservative default)
+export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 5, now = new Date() }) {
+    const stepMin = Number(intervalMinutes) === 10 ? 10 : 5;
+    const stepMs = stepMin * 60 * 1000;
+    const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
+
     const baseTime = lastScheduledTime 
-        ? new Date(lastScheduledTime.getTime() + TEN_MINUTES_IN_MS)
+        ? new Date(lastScheduledTime.getTime() + stepMs)
         : new Date(now.getTime() + TWENTY_MINUTES_IN_MS);
 
-    return new Date(Math.ceil(baseTime.getTime() / TEN_MINUTES_IN_MS) * TEN_MINUTES_IN_MS);
+    return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
 }
 
 export function getScheduleHintText(meta = {}) {

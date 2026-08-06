@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
 import Database from 'better-sqlite3';
-import { exec, spawn } from 'child_process';
+import { exec, spawn, execSync, execFileSync } from 'child_process';
 import axios from 'axios';
 import {
     computeNextScheduledTime,
@@ -97,6 +97,7 @@ async function launchBrowser(userDataDir, options) {
 // Init SQLite DB
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
+db.pragma('busy_timeout = 10000');
 
 // Create tables
 db.exec(`
@@ -220,6 +221,18 @@ try {
     console.error('Migration error (needs_render column):', err);
 }
 
+// Migration: render_concat_video — Xác định profile này có nối video render thay vì bypass render không
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasRenderConcatVideo = tableInfo.some((col) => col.name === 'render_concat_video');
+    if (!hasRenderConcatVideo) {
+        db.exec('ALTER TABLE profiles ADD COLUMN render_concat_video INTEGER DEFAULT 0;');
+        console.log('Added render_concat_video column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (render_concat_video column):', err);
+}
+
 // Migration: remove_title — Xác định profile này có xóa tiêu đề mặc định khi upload không
 try {
     const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
@@ -312,6 +325,18 @@ try {
     console.error('Migration error (cookies column):', err);
 }
 
+// Migration: schedule_interval — Khoảng cách thời gian lên lịch (5 hoặc 10 phút, mặc định 5)
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasScheduleInterval = tableInfo.some((col) => col.name === 'schedule_interval');
+    if (!hasScheduleInterval) {
+        db.exec('ALTER TABLE profiles ADD COLUMN schedule_interval INTEGER DEFAULT 5;');
+        console.log('Added schedule_interval column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (schedule_interval column):', err);
+}
+
 // Migration from db.json
 if (fs.existsSync(OLD_DB_PATH)) {
     try {
@@ -401,6 +426,48 @@ function parseProxy(proxyStr) {
     return { server, username, password };
 }
 
+async function injectProfileCookies(browser, profile) {
+    if (profile.cookies && profile.cookies.trim()) {
+        try {
+            let cookies;
+            try {
+                cookies = JSON.parse(profile.cookies);
+            } catch (jsonErr) {
+                // Try parsing raw cookie string format (name1=value1; name2=value2)
+                cookies = profile.cookies.split(';').map(part => {
+                    const equalIdx = part.indexOf('=');
+                    if (equalIdx === -1) return null;
+                    const name = part.substring(0, equalIdx).trim();
+                    const value = part.substring(equalIdx + 1).trim();
+                    if (!name) return null;
+                    return {
+                        name,
+                        value,
+                        domain: '.tiktok.com',
+                        path: '/'
+                    };
+                }).filter(Boolean);
+            }
+            if (Array.isArray(cookies) && cookies.length > 0) {
+                const cleanedCookies = cookies.map(c => {
+                    const clean = { ...c };
+                    if (typeof clean.expires === 'number') {
+                        clean.expires = Math.round(clean.expires);
+                    }
+                    if (clean.sameSite && !['Lax', 'Strict', 'None'].includes(clean.sameSite)) {
+                        delete clean.sameSite;
+                    }
+                    return clean;
+                });
+                await browser.addCookies(cleanedCookies);
+                console.log(`[${profile.name}] Automatically injected ${cleanedCookies.length} cookies into browser context`);
+            }
+        } catch (e) {
+            console.error(`[${profile.name}] Failed to inject cookies:`, e.message);
+        }
+    }
+}
+
 // API Routes
 app.get('/api/profiles', (req, res) => {
     const profiles = db
@@ -423,7 +490,7 @@ app.get('/api/profiles', (req, res) => {
 });
 
 app.post('/api/profiles', (req, res) => {
-    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music } = req.body;
+    const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music, render_concat_video } = req.body;
 
     try {
         const id = Date.now().toString();
@@ -435,7 +502,8 @@ app.post('/api/profiles', (req, res) => {
             channel_ids,
             need_content_check,
             render_video_long,
-            set_music
+            set_music,
+            render_concat_video
         });
         res.json(profile);
     } catch (err) {
@@ -591,6 +659,301 @@ app.post('/api/profiles/import-csv', (req, res) => {
         res.status(500).json({ error: `Failed to import CSV: ${err.message}` });
     }
 });
+
+app.post('/api/profiles/import-folder', (req, res) => {
+    const { folderPath } = req.body;
+    if (!folderPath || typeof folderPath !== 'string') {
+        return res.status(400).json({ error: 'folderPath is required' });
+    }
+
+    try {
+        const resolvedPath = path.resolve(folderPath);
+        if (!fs.existsSync(resolvedPath)) {
+            return res.status(400).json({ error: 'Folder path does not exist' });
+        }
+        const stats = fs.statSync(resolvedPath);
+        if (!stats.isDirectory()) {
+            return res.status(400).json({ error: 'Path is not a directory' });
+        }
+
+        const configPath = path.join(resolvedPath, 'config.json');
+        if (!fs.existsSync(configPath)) {
+            return res.status(400).json({ error: 'config.json not found in the directory' });
+        }
+
+        const configContent = fs.readFileSync(configPath, 'utf8');
+        let configData;
+        try {
+            configData = JSON.parse(configContent);
+        } catch (parseErr) {
+            return res.status(400).json({ error: 'Failed to parse config.json as JSON' });
+        }
+
+        const accounts = configData.accounts;
+        if (!Array.isArray(accounts)) {
+            return res.status(400).json({ error: 'accounts list not found in config.json' });
+        }
+
+        const results = { imported: 0, skipped: 0, errors: [] };
+
+        const insertProfile = db.prepare(`
+            INSERT INTO profiles (id, name, status, is_scheduled, auto_increment_schedule,
+                group_id, video_folder, set_music, upload_count, needs_render, remove_title,
+                need_content_check, account_id, pass, email, pass_email, cookies, music_search, proxy)
+            VALUES (?, ?, 'idle', 0, 0, ?, ?, 0, 1, 1, 1, 1, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const existingNames = new Set(
+            db.prepare('SELECT name FROM profiles').all().map((r) => r.name.toLowerCase())
+        );
+
+        const cookiesDir = path.join(resolvedPath, 'cookies');
+
+        for (const account of accounts) {
+            const profileName = (account.name || '').trim();
+            const accountId = (account.id || '').trim();
+
+            if (!profileName) {
+                results.errors.push(`Row skipped: empty account name for id "${accountId}"`);
+                results.skipped++;
+                continue;
+            }
+
+            // Check if cookie file exists first (as requested by the user)
+            const cookieFileName = `${accountId}.json`;
+            const cookieFilePath = path.join(cookiesDir, cookieFileName);
+            if (!accountId || !fs.existsSync(cookieFilePath)) {
+                results.errors.push(`"${profileName}": skipped because no corresponding cookie file "${cookieFileName}" was found`);
+                results.skipped++;
+                continue;
+            }
+
+            if (existingNames.has(profileName.toLowerCase())) {
+                results.errors.push(`"${profileName}": profile name already exists`);
+                results.skipped++;
+                continue;
+            }
+
+            const groupName = (account.group || '').trim();
+            let groupId = null;
+            if (groupName) {
+                groupId = findOrCreateGroupByName(db, groupName);
+            }
+
+            let cookiesContent = null;
+            try {
+                const rawCookies = fs.readFileSync(cookieFilePath, 'utf8');
+                // Validate it is valid JSON
+                JSON.parse(rawCookies);
+                cookiesContent = rawCookies;
+            } catch (err) {
+                results.errors.push(`"${profileName}": failed to parse cookie file "${cookieFileName}"`);
+                results.skipped++;
+                continue;
+            }
+
+            const proxy = (account.proxy || '').trim() || null;
+            const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
+
+            const videoFolder = groupName
+                ? path.join(UPLOADS_DIR, groupName, profileName)
+                : path.join(UPLOADS_DIR, profileName);
+
+            try {
+                if (videoFolder) {
+                    fs.mkdirSync(videoFolder, { recursive: true });
+                }
+                insertProfile.run(id, profileName, groupId, videoFolder, accountId, null, null, null, cookiesContent, null, proxy);
+                existingNames.add(profileName.toLowerCase());
+                results.imported++;
+            } catch (e) {
+                results.errors.push(`"${profileName}": ${e.message}`);
+                results.skipped++;
+            }
+        }
+
+        res.json(results);
+    } catch (err) {
+        console.error('Folder import error:', err);
+        res.status(500).json({ error: `Failed to import folder: ${err.message}` });
+    }
+});
+
+app.post('/api/profiles/export-folder', async (req, res) => {
+    try {
+        const { profileIds, exportPath, downloadZip } = req.body;
+
+        if (!Array.isArray(profileIds) || profileIds.length === 0) {
+            return res.status(400).json({ error: 'Chưa chọn profile nào để xuất' });
+        }
+
+        // Fetch selected profiles
+        const placeholders = profileIds.map(() => '?').join(',');
+        const profiles = db.prepare(`SELECT * FROM profiles WHERE id IN (${placeholders})`).all(...profileIds);
+
+        if (!profiles || profiles.length === 0) {
+            return res.status(400).json({ error: 'Không tìm thấy profile nào phù hợp' });
+        }
+
+        // Fetch group names mapping
+        const groupRows = db.prepare('SELECT id, name FROM groups').all();
+        const groupMap = new Map(groupRows.map(g => [g.id, g.name]));
+
+        // Determine output directory
+        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const folderName = `TikTok_Export_selected_${profiles.length}TK_${dateStr}`;
+        let targetDir;
+        if (exportPath && exportPath.trim()) {
+            targetDir = path.resolve(exportPath.trim());
+        } else {
+            targetDir = path.join(__dirname, '..', folderName);
+        }
+
+        fs.mkdirSync(targetDir, { recursive: true });
+
+        const cookiesDir = path.join(targetDir, 'cookies');
+        fs.mkdirSync(cookiesDir, { recursive: true });
+
+        const accounts = [];
+        let exportedCookiesCount = 0;
+        let missingCookiesCount = 0;
+
+        const updateAccountIdStmt = db.prepare('UPDATE profiles SET account_id = ? WHERE id = ?');
+
+        for (const profile of profiles) {
+            let accountId = (profile.account_id || '').trim();
+            if (!accountId) {
+                accountId = 'qr' + Math.random().toString(36).substring(2, 12);
+                try {
+                    updateAccountIdStmt.run(accountId, profile.id);
+                } catch (e) {}
+            }
+
+            const rawCookies = (profile.cookies || '').trim();
+            const cookieFilePath = path.join(cookiesDir, `${accountId}.json`);
+
+            if (rawCookies) {
+                try {
+                    let cookieObj;
+                    if (rawCookies.startsWith('[') || rawCookies.startsWith('{')) {
+                        cookieObj = JSON.parse(rawCookies);
+                    } else {
+                        cookieObj = rawCookies.split(';').map(part => {
+                            const [name, ...val] = part.trim().split('=');
+                            return { name, value: val.join('='), domain: '.tiktok.com', path: '/' };
+                        });
+                    }
+                    fs.writeFileSync(cookieFilePath, JSON.stringify(cookieObj, null, 2), 'utf8');
+                    exportedCookiesCount++;
+                } catch (err) {
+                    fs.writeFileSync(cookieFilePath, '[]', 'utf8');
+                    missingCookiesCount++;
+                }
+            } else {
+                fs.writeFileSync(cookieFilePath, '[]', 'utf8');
+                missingCookiesCount++;
+            }
+
+            const groupName = groupMap.get(profile.group_id) || '';
+
+            accounts.push({
+                id: accountId,
+                name: profile.name,
+                browser_data_dir: `C:\\Users\\PC\\Desktop\\TikTokAllInOne3.exe\\data\\browser_data\\acc_${accountId}`,
+                proxy: (profile.proxy || '').trim(),
+                note: "exported cookie login",
+                group: groupName,
+                video_folder: "",
+                youtube_channels: [],
+                music_claim: "",
+                folder_enabled: true,
+                need_login: false
+            });
+        }
+
+        const instanceId = (Math.random().toString(36).substring(2, 11) + '-' + Math.random().toString(36).substring(2, 5)).toUpperCase();
+        const configData = {
+            instance_id: instanceId,
+            accounts: accounts,
+            check_interval_seconds: 300,
+            max_concurrent_uploads: 2,
+            download_dir: "",
+            videos_per_account: 1,
+            folder_threads: 2,
+            delete_after_upload: false,
+            music_claim: "",
+            telegram_bot_token: "",
+            telegram_chat_id: "",
+            vps_id: "",
+            hmcaptcha_apikey: "",
+            backup_keep_startup: 5,
+            backup_keep_daily: 7,
+            groups: [],
+            recently_deleted: [],
+            keep_original_audio: false,
+            folder_schedule: false,
+            folder_schedule_gap: 0,
+            folder_schedule_perday: 0,
+            folder_schedule_mode: "even",
+            folder_schedule_perbatch: 1,
+            yt_freshness: "all",
+            acc_alive: {}
+        };
+
+        fs.writeFileSync(path.join(targetDir, 'config.json'), JSON.stringify(configData, null, 2), 'utf8');
+        fs.writeFileSync(path.join(targetDir, 'archive.json'), JSON.stringify({ known_ids: [] }, null, 2), 'utf8');
+
+        let zipPath = null;
+        let downloadUrl = null;
+
+        if (downloadZip) {
+            zipPath = `${targetDir}.zip`;
+            try {
+                execFileSync('powershell.exe', [
+                    '-NoProfile',
+                    '-NonInteractive',
+                    '-Command',
+                    `Compress-Archive -Path '${targetDir.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force`
+                ], { windowsHide: true });
+                downloadUrl = `/api/profiles/download-export-zip?file=${encodeURIComponent(path.basename(zipPath))}`;
+            } catch (zErr) {
+                console.error('ZIP creation error:', zErr);
+            }
+        }
+
+        return res.json({
+            success: true,
+            exportPath: targetDir,
+            zipPath: zipPath,
+            downloadUrl: downloadUrl,
+            total: profiles.length,
+            exportedCookies: exportedCookiesCount,
+            missingCookies: missingCookiesCount
+        });
+
+    } catch (err) {
+        console.error('Export folder error:', err);
+        return res.status(500).json({ error: `Failed to export folder: ${err.message}` });
+    }
+});
+
+app.get('/api/profiles/download-export-zip', (req, res) => {
+    try {
+        const fileName = req.query.file;
+        if (!fileName || !fileName.endsWith('.zip')) {
+            return res.status(400).send('Invalid file parameter');
+        }
+        const safeFileName = path.basename(fileName);
+        const zipPath = path.join(__dirname, '..', safeFileName);
+        if (!fs.existsSync(zipPath)) {
+            return res.status(404).send('ZIP file not found');
+        }
+        res.download(zipPath, safeFileName);
+    } catch (err) {
+        res.status(500).send('Error downloading zip file');
+    }
+});
+
 
 app.delete('/api/profiles/:id', async (req, res) => {
     const profileId = req.params.id;
@@ -800,6 +1163,11 @@ app.post('/api/profiles/clear-trash', (req, res) => {
         'parcel_tracking_db',
         'Safe Browsing',
         'NativeMessagingHosts',
+        // TikTok video/media cache — chiếm hàng GB mỗi profile
+        'IndexedDB',
+        'blob_storage',
+        'BrowserMetrics',
+        'Crashpad',
     ];
 
     // Also clear specific cache files in Default/ (not directories)
@@ -931,8 +1299,57 @@ app.post('/api/profiles/clear-trash', (req, res) => {
     });
 });
 
+// POST /api/system/clear-debug — Xóa debug PNG + truncate automation.log để giải phóng dung lượng
+app.post('/api/system/clear-debug', (req, res) => {
+    try {
+        let freedBytes = 0;
+
+        // Xóa tất cả file debug_*.png trong thư mục backend
+        const backendDir = __dirname;
+        const entries = fs.readdirSync(backendDir);
+        let deletedFiles = 0;
+        for (const entry of entries) {
+            if (entry.startsWith('debug_') && entry.endsWith('.png')) {
+                const filePath = path.join(backendDir, entry);
+                try {
+                    freedBytes += fs.statSync(filePath).size;
+                    fs.rmSync(filePath, { force: true });
+                    deletedFiles++;
+                } catch (e) {
+                    console.error(`[ClearDebug] Failed to delete ${filePath}: ${e.message}`);
+                }
+            }
+        }
+
+        // Truncate automation.log (xóa nội dung nhưng giữ file)
+        const logPath = path.join(backendDir, 'automation.log');
+        let logFreedBytes = 0;
+        if (fs.existsSync(logPath)) {
+            try {
+                logFreedBytes = fs.statSync(logPath).size;
+                fs.writeFileSync(logPath, `[${new Date().toISOString()}] Log cleared by user\n`);
+                freedBytes += logFreedBytes;
+                console.log(`[ClearDebug] Truncated automation.log (freed ${(logFreedBytes / 1024 / 1024).toFixed(1)} MB)`);
+            } catch (e) {
+                console.error(`[ClearDebug] Failed to truncate automation.log: ${e.message}`);
+            }
+        }
+
+        const freedMB = (freedBytes / 1024 / 1024).toFixed(1);
+        console.log(`[ClearDebug] Deleted ${deletedFiles} debug PNG files, freed ${freedMB} MB total`);
+        res.json({
+            success: true,
+            deletedFiles,
+            freedMB: parseFloat(freedMB),
+            message: `Đã xóa ${deletedFiles} file debug và dọn log, giải phóng ${freedMB} MB`,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -998,6 +1415,11 @@ app.patch('/api/profiles/:id', (req, res) => {
         const val = auto_increment_schedule ? 1 : 0;
         db.prepare('UPDATE profiles SET auto_increment_schedule = ? WHERE id = ?').run(val, profileId);
     }
+    if (schedule_interval !== undefined) {
+        const intervalNum = Number(schedule_interval);
+        const val = [5, 10, 15, 20].includes(intervalNum) ? intervalNum : 5;
+        db.prepare('UPDATE profiles SET schedule_interval = ? WHERE id = ?').run(val, profileId);
+    }
     if (upload_count !== undefined) {
         db.prepare('UPDATE profiles SET upload_count = ? WHERE id = ?').run(upload_count, profileId);
     }
@@ -1019,6 +1441,10 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (render_video_long !== undefined) {
         const val = render_video_long ? 1 : 0;
         db.prepare('UPDATE profiles SET render_video_long = ? WHERE id = ?').run(val, profileId);
+    }
+    if (render_concat_video !== undefined) {
+        const val = render_concat_video ? 1 : 0;
+        db.prepare('UPDATE profiles SET render_concat_video = ? WHERE id = ?').run(val, profileId);
     }
     if (cookies !== undefined) {
         db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?').run(cookies, profileId);
@@ -1640,6 +2066,41 @@ app.post('/api/upload_new_video', async (req, res) => {
             // Skip the rest of the handler (already responded and launched background job)
             return;
 
+        } else if (profile.render_concat_video !== 0 && profile.render_concat_video !== undefined) {
+            const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
+            console.log(`[${profile.name}] Starting concat render: ${downloadedFilePath} -> ${renderedFilePath}`);
+
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+            const concatVideosFolder = path.join(__dirname, '..', 'concat_videos');
+
+            if (!fs.existsSync(concatVideosFolder)) {
+                fs.mkdirSync(concatVideosFolder, { recursive: true });
+            }
+
+            const concatArgs = [
+                path.join(__dirname, 'concat.py'),
+                '--video', downloadedFilePath,
+                '--concat-dir', concatVideosFolder,
+                '--output', renderedFilePath
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn(pythonBinary, concatArgs);
+                let stdoutData = '';
+                let stderrData = '';
+                child.stdout.on('data', (data) => stdoutData += data.toString());
+                child.stderr.on('data', (data) => stderrData += data.toString());
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`concat.py exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${profile.name}] Concat render complete. Replacing original downloaded video file...`);
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+            fs.renameSync(renderedFilePath, downloadedFilePath);
+            console.log(`[${profile.name}] Video fully replaced with concat-rendered version.`);
         } else if (profile.needs_render !== 0) {
             const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
             console.log(`[${profile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
@@ -2196,6 +2657,41 @@ app.post('/api/upload-profile', async (req, res) => {
             // Skip the rest of the handler (already responded and launched background job)
             return;
 
+        } else if (currentProfile.render_concat_video !== 0 && currentProfile.render_concat_video !== undefined) {
+            const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
+            console.log(`[${currentProfile.name}] Starting concat render: ${downloadedFilePath} -> ${renderedFilePath}`);
+
+            const pythonBinary = process.platform === 'win32' ? 'python' : 'python3';
+            const concatVideosFolder = path.join(__dirname, '..', 'concat_videos');
+
+            if (!fs.existsSync(concatVideosFolder)) {
+                fs.mkdirSync(concatVideosFolder, { recursive: true });
+            }
+
+            const concatArgs = [
+                path.join(__dirname, 'concat.py'),
+                '--video', downloadedFilePath,
+                '--concat-dir', concatVideosFolder,
+                '--output', renderedFilePath
+            ];
+
+            await new Promise((resolve, reject) => {
+                const child = safeSpawn(pythonBinary, concatArgs);
+                let stdoutData = '';
+                let stderrData = '';
+                child.stdout.on('data', (data) => stdoutData += data.toString());
+                child.stderr.on('data', (data) => stderrData += data.toString());
+                child.on('close', (code) => {
+                    if (code === 0) resolve();
+                    else reject(new Error(`concat.py exited with code ${code}. Stderr: ${stderrData}`));
+                });
+                child.on('error', (err) => { child.kill(); reject(err); });
+            });
+
+            console.log(`[${currentProfile.name}] Concat render complete. Replacing original downloaded video file...`);
+            if (fs.existsSync(downloadedFilePath)) fs.unlinkSync(downloadedFilePath);
+            fs.renameSync(renderedFilePath, downloadedFilePath);
+            console.log(`[${currentProfile.name}] Video fully replaced with concat-rendered version.`);
         } else if (currentProfile.needs_render !== 0) {
             const renderedFilePath = path.join(videoFolder, `rendered_${safeFileName}`);
             console.log(`[${currentProfile.name}] Starting render pipeline via render.py: ${downloadedFilePath} -> ${renderedFilePath}`);
@@ -2334,7 +2830,8 @@ app.post('/api/open-profile', async (req, res) => {
             }
         }
 
-        const browser = await launchBrowser(userDataDir, browserOptions);
+        const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+        await injectProfileCookies(browser, profile);
         manualBrowsers.set(profileId, browser);
 
         browser.on('close', () => {
@@ -2373,7 +2870,12 @@ async function changeAvatar(profile, avatarImage) {
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
 
+<<<<<<< HEAD
     const browser = await launchBrowser(userDataDir, browserOptions);
+=======
+    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
+>>>>>>> origin/main
     avatarChangingProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
 
@@ -2575,7 +3077,12 @@ async function addFavoriteMusic(profile, searchTerm) {
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
 
+<<<<<<< HEAD
     const browser = await launchBrowser(userDataDir, browserOptions);
+=======
+    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
+>>>>>>> origin/main
     addingFavoriteMusicProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
 
@@ -2733,34 +3240,31 @@ async function addFavoriteMusic(profile, searchTerm) {
 
         log('Clicking enabled Sounds button...');
         await soundsBtn.click();
-        await page.waitForTimeout(3000);
 
-        // Step 5: Wait for Sounds panel to fully open, then find search input
-        log('Waiting for Sounds panel to fully open...');
-        await page.waitForTimeout(2000);
+        // Step 5: Wait for search input to appear in Sounds panel (no hardcoded wait)
+        log('Waiting for search input to appear in Sounds panel...');
         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
-        log('Looking for search input in Sounds panel...');
 
         const searchInputSelectors = [
-            'input.TextInput__input',
             'input[placeholder="Search sounds"]',
-            'input[role="textbox"][type="text"]',
-            'input[placeholder*="search" i]',
             'input[placeholder*="sound" i]',
             'input[placeholder*="music" i]',
-            'input[type="search"]',
-            'input[class*="Search"]',
         ];
 
         let searchInput = null;
-        for (const sel of searchInputSelectors) {
-            try {
-                searchInput = await page.waitForSelector(sel, { timeout: 300 });
-                if (searchInput) {
-                    log(`Found search input via: ${sel}`);
-                    break;
-                }
-            } catch (e) {}
+        for (let i = 0; i < 30; i++) {
+            for (const sel of searchInputSelectors) {
+                try {
+                    const el = await page.$(sel);
+                    if (el && await el.isVisible()) {
+                        searchInput = el;
+                        log(`Found search input via: ${sel}`);
+                        break;
+                    }
+                } catch (err) {}
+            }
+            if (searchInput) break;
+            await page.waitForTimeout(1000);
         }
 
         if (!searchInput) {
@@ -2769,14 +3273,30 @@ async function addFavoriteMusic(profile, searchTerm) {
             return;
         }
 
-        // Step 6: Type search term using page.fill() — handles React controlled inputs correctly
+        log('Sounds panel ready. Waiting 4 seconds for UI stability before typing...');
+        await page.waitForTimeout(4000);
+
+        // Step 6: Type search term using keyboard.type() to mimic real user input
         log(`Setting search term: "${searchTerm}"`);
-        await searchInput.fill(searchTerm);
+        await searchInput.focus();
+        await searchInput.click();
+        await page.keyboard.type(searchTerm, { delay: 30 });
         log('Search term filled, waiting for suggestions...');
         await page.waitForTimeout(2000);
+
         await page.keyboard.press('Enter');
-        log('Enter pressed, waiting for results...');
-        await page.waitForTimeout(4000);
+        log('Enter pressed, waiting for new search results to load...');
+
+        // Wait a moment for TikTok to switch to loading state
+        await page.waitForTimeout(1000);
+
+        try {
+            await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
+            log('Search results refreshed.');
+        } catch (e) {
+            log('Wait for search results timed out or failed. Proceeding anyway...');
+        }
+        await page.waitForTimeout(2000); // Short stabilization wait after refresh
 
         // Step 7: Click star/bookmark on first search result
         // The star button is hidden until real mouse hover — use Playwright's native hover() (not JS dispatchEvent)
@@ -3216,6 +3736,18 @@ async function dismissOnboardingModals(page, log) {
                 }
             }
 
+            // Check for sound guide callouts ("Use these sounds to prevent your 1 Minute+...")
+            const soundGuides = document.querySelectorAll('[class*="DivGuideContainer"], [class*="GuideContainer"]');
+            for (const sg of soundGuides) {
+                const rect = sg.getBoundingClientRect();
+                const style = window.getComputedStyle(sg);
+                if (rect.width > 50 && rect.height > 20 &&
+                    style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    found.push({ type: 'sound-guide', buttons: [] });
+                    break;
+                }
+            }
+
             return found;
         });
 
@@ -3225,7 +3757,7 @@ async function dismissOnboardingModals(page, log) {
         }
 
         modalsFound = true;
-        log(`Detected ${detection.length} onboarding modal(s): ${detection.map(d => d.type + '(' + d.buttons.join(',') + ')').join('; ')}`);
+        log(`Detected ${detection.length} onboarding modal(s): ${detection.map(d => d.type + '(' + (d.buttons ? d.buttons.join(',') : '') + ')').join('; ')}`);
 
     } catch (e) {
         // evaluate failed (page might be closing/navigating). Skip.
@@ -3234,14 +3766,44 @@ async function dismissOnboardingModals(page, log) {
 
     // Phase 2: Only if modals detected, dismiss them with targeted selectors
 
-    // 1. TUXModal: "Turn on automatic content checks?" → Cancel
-    // ONLY target Cancel inside TUXModal div, never the upload UI Cancel
+    // 1. TUXModal (e.g., "Turn on automatic content checks?" -> ALWAYS Cancel, "Allow video uploads on mobile?" -> Got it)
     try {
-        const el = await page.waitForSelector('div.TUXModal button:has-text("Cancel")', { timeout: 3000 });
-        if (el) {
-            log('✅ Dismissing TUXModal "Turn on automatic content checks" → Cancel');
-            await el.click();
-            await page.waitForTimeout(800);
+        const tuxModal = await page.$('div.TUXModal');
+        if (tuxModal && await tuxModal.isVisible()) {
+            const text = await tuxModal.innerText().catch(() => '');
+            if (text.includes("automatic content checks") || text.includes("content checks")) {
+                const cancelBtn = await tuxModal.$('button:has-text("Cancel")');
+                if (cancelBtn) {
+                    log('✅ Dismissing "Turn on automatic content checks" → Cancel');
+                    await cancelBtn.click();
+                    await page.waitForTimeout(800);
+                }
+            } else if (text.includes("Discard this post") || text.includes("discarded permanently")) {
+                const notNowBtn = await tuxModal.$('button:has-text("Not now")');
+                if (notNowBtn && await notNowBtn.isVisible()) {
+                    log('✅ Dismissing "Discard this post?" → Not now');
+                    await notNowBtn.click();
+                    await page.waitForTimeout(800);
+                } else {
+                    const discardBtn = await tuxModal.$('button:has-text("Discard")');
+                    if (discardBtn && await discardBtn.isVisible()) {
+                        log('✅ Dismissing "Discard this post?" → Discard');
+                        await discardBtn.click();
+                        await page.waitForTimeout(800);
+                    }
+                }
+            } else {
+                const modalBtns = ['button:has-text("Got it")', 'button:has-text("Allow")', 'button:has-text("Not now")', 'button:has-text("Cancel")', 'button:has-text("Skip")'];
+                for (const btnSel of modalBtns) {
+                    const el = await tuxModal.$(btnSel).catch(() => null);
+                    if (el && await el.isVisible()) {
+                        log(`✅ Dismissing TUXModal → ${btnSel}`);
+                        await el.click();
+                        await page.waitForTimeout(800);
+                        break;
+                    }
+                }
+            }
         }
     } catch (e) { /* not found */ }
 
@@ -3283,6 +3845,17 @@ async function dismissOnboardingModals(page, log) {
             await page.waitForTimeout(800);
         }
     } catch (e) { /* not found */ }
+
+    // 4. Sound guide callout ("Use these sounds...") → click or press Escape
+    try {
+        const sgEl = await page.waitForSelector('[class*="DivGuideContainer"], [class*="GuideContainer"]', { timeout: 1500 }).catch(() => null);
+        if (sgEl && await sgEl.isVisible()) {
+            log('✅ Dismissing sound guide callout ("Use these sounds...")');
+            await sgEl.click().catch(() => null);
+            await page.keyboard.press('Escape').catch(() => null);
+            await page.waitForTimeout(500);
+        }
+    } catch (e) { /* not found */ }
 }
 
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false) {
@@ -3305,7 +3878,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         }
     }
 
+<<<<<<< HEAD
     const browser = await launchBrowser(userDataDir, browserOptions);
+=======
+    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
+>>>>>>> origin/main
 
     const log = (msg) => {
         const entry = `[${new Date().toISOString()}] [${profile.name}] ${msg}\n`;
@@ -3318,7 +3896,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     };
 
     try {
-        const page = await browser.newPage();
+        let page = await browser.newPage();
         log(`Automation started for profile: ${profile.name}`);
 
         if (videos.length === 0) {
@@ -3457,6 +4035,48 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
             // Dismiss any onboarding modals that may appear after file selection
             await dismissOnboardingModals(page, log);
+            await dismissPopups(page);
+            await page.waitForTimeout(1000);
+            // Gọi lần 2 để đảm bảo popup đã được dismiss (popup có thể xuất hiện chậm)
+            await dismissPopups(page);
+
+            // Wait for upload to complete (Cancel button detaches)
+            // Chạy dismissPopups liên tục trong khi đợi để tránh popup block upload
+            try {
+                const uploadCompletedPromise = (async () => {
+                    // Đợi Cancel button của upload progress xuất hiện trước
+                    const uploadProgressCancel = page.locator('.upload-progress button:has-text("Cancel"), [class*="upload"] button:has-text("Cancel"), button[class*="cancel"]').first();
+                    // Nếu không tìm thấy cancel của progress, dùng fallback: detect upload done bằng cách kiểm tra Post button available
+                    let cancelDetected = false;
+                    try {
+                        await uploadProgressCancel.waitFor({ state: 'visible', timeout: 10000 });
+                        cancelDetected = true;
+                    } catch (_) { /* no specific upload cancel found */ }
+
+                    // Loop dismiss popups mỗi 2s trong khi đợi Post button ready
+                    for (let i = 0; i < 600; i++) { // max 20 phút
+                        await page.waitForTimeout(2000);
+                        await dismissPopups(page);
+                        await dismissOnboardingModals(page, log);
+
+                        // Kiểm tra upload xong: Post button enabled và Cancel của upload progress biến mất
+                        const postBtn = await page.$('button[data-e2e="post_video_button"]:not([disabled]), button.common-button-post-video:not([disabled])');
+                        if (postBtn && await postBtn.isVisible()) {
+                            log('Upload complete (Post button is enabled and visible).');
+                            break;
+                        }
+                    }
+                })();
+
+                await uploadCompletedPromise;
+                await page.waitForTimeout(2000);
+
+                // Dismiss popups & tooltips that appeared after video upload completion
+                await dismissOnboardingModals(page, log);
+                await dismissPopups(page);
+            } catch (e) {
+                log(`Wait for upload completion timed out or failed: ${e.message}`);
+            }
 
             // --- NEW TASKS: Clear Title & Add Sound ---
             try {
@@ -3496,23 +4116,28 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             const useSetMusic = Number(profile.set_music) === 1;
             if (useSetMusic) {
                 try {
-                    log(`Task 2: Opening Sounds panel immediately (no wait for processing)...`);
+                    log(`Task 2: Waiting for Sounds panel button to be fully enabled and ready...`);
+
+                    // Clear any onboarding / joyride overlays that might block clicking Edit Video
+                    await dismissOnboardingModals(page, log);
+                    await dismissPopups(page);
+
                     let soundsBtn = null;
                     try {
                         soundsBtn = await page.waitForSelector(
-                            'button[data-button-name="sounds"]',
-                            { timeout: 30000, state: 'visible' }
+                            'button[data-button-name="sounds"]:not([disabled])',
+                            { timeout: 60000, state: 'visible' }
                         );
-                        log(`Sounds button is visible.`);
+                        log(`Sounds button is visible and enabled.`);
                     } catch (e) {
-                        log(`Sounds button not found directly: ${e.message}`);
+                        log(`Sounds button not found directly or still disabled: ${e.message}`);
                         // Try clicking Edit Video first to reveal the sounds button
                         const editButton = await page.$('button:has-text("Edit video"), .edit-video-btn, [data-e2e="edit-video-button"], button:has-text("Edit")');
                         if (editButton && await editButton.isVisible()) {
                             log(`Clicking Edit Video button...`);
-                            await editButton.click();
+                            await editButton.click({ force: true }).catch(() => editButton.click());
                             soundsBtn = await page.waitForSelector(
-                                'button[data-button-name="sounds"]',
+                                'button[data-button-name="sounds"]:not([disabled])',
                                 { timeout: 30000, state: 'visible' }
                             ).catch(() => null);
                         }
@@ -3521,7 +4146,11 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     if (soundsBtn) {
                         log(`Opening Sounds panel...`);
                         await soundsBtn.click();
-                        await page.waitForTimeout(3000); // Wait for panel to open
+                        await page.waitForTimeout(1500);
+
+                        // Dismiss guide tooltips (e.g. "Phone mode" -> Got it) and any editor popups
+                        await dismissOnboardingModals(page, log);
+                        await dismissPopups(page);
 
                         // Screenshot before search
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
@@ -3533,45 +4162,149 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         } else {
                             log(`Searching for music: "${searchTerm}"`);
 
-                            // Find the search input using multiple selector fallbacks (fast check)
+                            // Wait for search input to appear in Sounds panel (no hardcoded wait)
                             const searchInputSelectors = [
-                                'input.TextInput__input',
                                 'input[placeholder="Search sounds"]',
-                                'input[role="textbox"][type="text"]',
-                                'input[type="search"]',
+                                'input[placeholder*="sound" i]',
+                                'input[placeholder*="music" i]',
                             ];
 
                             let searchInput = null;
-                            for (const sel of searchInputSelectors) {
-                                try {
-                                    searchInput = await page.waitForSelector(sel, { timeout: 300 });
-                                    if (searchInput) {
-                                        log(`Found search input via: ${sel}`);
-                                        break;
-                                    }
-                                } catch (e) {}
+                            for (let i = 0; i < 30; i++) {
+                                for (const sel of searchInputSelectors) {
+                                    try {
+                                        const el = await page.$(sel);
+                                        if (el && await el.isVisible()) {
+                                            searchInput = el;
+                                            log(`Found search input via: ${sel}`);
+                                            break;
+                                        }
+                                    } catch (err) {}
+                                }
+                                if (searchInput) break;
+                                await page.waitForTimeout(1000);
                             }
 
                             if (!searchInput) {
                                 log('ERROR: Search input not found in Sounds panel');
                                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_search.png`) }).catch(() => null);
                             } else {
+                                log('Sounds panel ready. Waiting 4 seconds for UI stability before typing...');
+                                await page.waitForTimeout(4000);
+
                                 // Fill search term and trigger search
                                 log(`Setting search term: "${searchTerm}"`);
-                                await searchInput.fill(searchTerm);
-                                await page.keyboard.press('Enter');
-                                log('Enter pressed, waiting for results...');
+                                await searchInput.focus();
+                                await searchInput.click();
+                                await page.keyboard.type(searchTerm, { delay: 30 });
+                                log('Search term filled, waiting for suggestions...');
                                 await page.waitForTimeout(2000);
+
+                                await page.keyboard.press('Enter');
+                                log('Enter pressed, waiting for new search results to load...');
+
+                                 // Wait a moment for TikTok to switch to loading state
+                                 await page.waitForTimeout(1000);
+
+                                try {
+                                    await page.waitForSelector('div[role="listitem"][data-item-id], .MusicPanelSearchResultList__empty', { timeout: 30000 });
+                                    log('Search results refreshed or empty state detected.');
+                                } catch (e) {
+                                    log('Wait for search results timed out or failed. Proceeding anyway...');
+                                }
+                                await page.waitForTimeout(2000); // Short stabilization wait after refresh
 
                                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results.png`) }).catch(() => null);
 
                                 let soundAdded = false;
                                 try {
-                                    // Find first search result and click plus-bold icon
+                                    const emptyResult = await page.$('.MusicPanelSearchResultList__empty');
                                     const firstItem = await page.$('div[role="listitem"][data-item-id]');
-                                    if (!firstItem) {
-                                        log('WARNING: No search results found');
+
+                                    if (emptyResult || !firstItem) {
+                                        log('WARNING: No search results found (empty list or no first item). Triggering Recent fallback...');
                                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results.png`) }).catch(() => null);
+
+                                        // Click the 'x' icon in search music
+                                        const clearBtn = await page.$('[data-icon="x-circle-fill"], svg[data-icon="x-circle-fill"]');
+                                        if (clearBtn) {
+                                            log('Clicking x icon to clear search...');
+                                            await clearBtn.click();
+                                        } else {
+                                            log('x-circle-fill icon not found, using keyboard selectAll+Backspace...');
+                                            await searchInput.focus();
+                                            await searchInput.click({ clickCount: 3 });
+                                            await page.keyboard.press('Control+A');
+                                            await page.keyboard.press('Backspace');
+                                        }
+                                        await page.waitForTimeout(1500);
+
+                                        // Click Recent tab
+                                        log('Looking for Recent tab...');
+                                        let recentTab = null;
+                                        const recentSelectors = [
+                                            'div[role="tab"]:has-text("Recent")',
+                                            'div[role="tab"]:has-text("Gần đây")',
+                                            'div[role="tab"]:has-text("recent")',
+                                            'div[role="tab"]:has-text("gần đây")',
+                                            'span:has-text("Recent")',
+                                            'span:has-text("Gần đây")',
+                                            'button:has-text("Recent")',
+                                            'button:has-text("Gần đây")',
+                                            'span:has-text("Recents")',
+                                            'button:has-text("Recents")',
+                                        ];
+                                        for (const sel of recentSelectors) {
+                                            try {
+                                                recentTab = await page.waitForSelector(sel, { timeout: 1500, state: 'visible' }).catch(() => null);
+                                                if (recentTab) {
+                                                    log(`Found Recent tab via selector: ${sel}`);
+                                                    break;
+                                                }
+                                            } catch (err) {}
+                                        }
+
+                                        if (recentTab) {
+                                            log('Clicking Recent tab...');
+                                            await recentTab.click();
+                                            await page.waitForTimeout(3000); // Wait for recent list to load
+
+                                            // Click the first record in recent list
+                                            const firstRecentItem = await page.$('div[role="listitem"][data-item-id]');
+                                            if (firstRecentItem) {
+                                                log('Found first recent result. Looking for plus button...');
+                                                const icon = await firstRecentItem.$('[data-icon="plus-bold"]');
+                                                if (icon) {
+                                                    log(`Found plus icon inside recent item. Finding parent button...`);
+                                                    const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
+                                                    await parentButton.scrollIntoViewIfNeeded();
+                                                    await parentButton.click({ force: true });
+                                                    log(`Sound added via Recent tab first result.`);
+                                                    soundAdded = true;
+
+                                                    // Enter -50 in the PropSettingInput
+                                                    log(`Waiting for PropSettingInput to appear...`);
+                                                    await page.waitForTimeout(800);
+                                                    const propInput = await page.waitForSelector(
+                                                        'input.PropSettingInput__input, input[class*="PropSettingInput"]',
+                                                        { timeout: 3000, state: 'visible' }
+                                                    ).catch(() => null);
+                                                    if (propInput) {
+                                                        log(`Found PropSettingInput. Entering -50...`);
+                                                        await propInput.click({ clickCount: 3 });
+                                                        await propInput.fill('-50');
+                                                        await page.keyboard.press('Enter');
+                                                        log(`Entered -50 into PropSettingInput.`);
+                                                    }
+                                                } else {
+                                                    log('Plus button not found in first favorites result.');
+                                                }
+                                            } else {
+                                                log('WARNING: No items found in Favorites tab.');
+                                            }
+                                        } else {
+                                            log('ERROR: Favorites tab not found.');
+                                        }
                                     } else {
                                         log('Found first search result. Looking for plus button...');
                                         const icon = await firstItem.$('[data-icon="plus-bold"]');
@@ -3810,11 +4543,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                                 log(`Captured base time: ${lastScheduledTime.toISOString()}`);
                             } else {
                                 log(`Warning: Failed to parse default time. Using fallback.`);
-                                lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, now: new Date() });
+                                lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime: null, intervalMinutes: profile.schedule_interval || 5, now: new Date() });
                             }
                         } else {
-                            // Video 3+: Increment by 5 minutes
-                            lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime });
+                            // Video 3+: Increment by intervalMinutes (5 or 10 mins)
+                            const intervalMin = profile.schedule_interval || 5;
+                            lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin });
                             const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                             const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 
@@ -4205,7 +4939,12 @@ async function runEngageSession(profile) {
         }
     }
 
+<<<<<<< HEAD
     const browser = await launchBrowser(userDataDir, browserOptions);
+=======
+    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    await injectProfileCookies(browser, profile);
+>>>>>>> origin/main
 
     const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
     engagingProfiles.set(profileId, session);
@@ -4987,7 +5726,26 @@ async function runTikTokLogin(profile) {
         const hasCookies = profile.cookies && profile.cookies.trim();
         if (hasCookies) {
             try {
-                const cookies = JSON.parse(profile.cookies);
+                let cookies;
+                try {
+                    cookies = JSON.parse(profile.cookies);
+                } catch (jsonErr) {
+                    // Try parsing raw cookie string format (name1=value1; name2=value2)
+                    cookies = profile.cookies.split(';').map(part => {
+                        const equalIdx = part.indexOf('=');
+                        if (equalIdx === -1) return null;
+                        const name = part.substring(0, equalIdx).trim();
+                        const value = part.substring(equalIdx + 1).trim();
+                        if (!name) return null;
+                        return {
+                            name,
+                            value,
+                            domain: '.tiktok.com',
+                            path: '/'
+                        };
+                    }).filter(Boolean);
+                }
+
                 if (Array.isArray(cookies) && cookies.length > 0) {
                     log(`Injecting ${cookies.length} cookies from stored profile...`);
                     await browser.addCookies(cookies);
@@ -5000,7 +5758,12 @@ async function runTikTokLogin(profile) {
                     await tiktokPage.waitForTimeout(3000);
 
                     const currentUrl = tiktokPage.url();
-                    if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+                    log('Checking login state via profile elements...');
+                    const isLoggedIn = await tiktokPage.waitForSelector('#header-profile-avatar, [data-e2e="profile-icon"], [data-e2e="avatar-icon"]', { timeout: 6000, state: 'visible' })
+                        .then(() => true)
+                        .catch(() => false);
+
+                    if (isLoggedIn) {
                         log('Login via cookies successful! Current URL: ' + currentUrl);
                         session.stats.step = 'cookie_login_complete';
                         // Refresh cookies from browser for future use
@@ -5009,7 +5772,7 @@ async function runTikTokLogin(profile) {
                             .run(JSON.stringify(freshCookies), profileId);
                         return;
                     }
-                    log('Cookie login failed (still on login page), falling back to email/password...');
+                    log('Cookie login failed (profile avatar not found), falling back to email/password...');
                 }
             } catch (e) {
                 log(`Cookie injection failed: ${e.message}, falling back to email/password...`);
@@ -5018,7 +5781,7 @@ async function runTikTokLogin(profile) {
 
         // --- STEP 1: Navigate to TikTok login ---
         log('Navigating to TikTok login page...');
-        await tiktokPage.goto('https://www.tiktok.com/login', {
+        await tiktokPage.goto('https://www.tiktok.com/login?redirect_url=https%3A%2F%2Fwww.tiktok.com%2Ftiktokstudio&enter_method=redirect&enter_from=tiktokstudio', {
             waitUntil: 'domcontentloaded',
             timeout: 30000
         });
@@ -5388,6 +6151,9 @@ async function runTikTokLogin(profile) {
                     break;
                 }
 
+                log(`Retrieved verification code (${code}). Hotmail tab closed. Waiting 2s before entering code...`);
+                await tiktokPage.waitForTimeout(2000);
+
                 // Always re-find code input — page may have changed during Hotmail retrieval
                 codeInput = null;
                 for (const sel of codeInputSelectors) {
@@ -5400,33 +6166,98 @@ async function runTikTokLogin(profile) {
                     break;
                 }
 
-                // Use JS to set value directly — TikTok floating UI may intercept clicks
+                // Focus and type code character by character, plus set native value as fallback
+                try {
+                    await codeInput.focus().catch(() => {});
+                    await codeInput.click().catch(() => {});
+                    await tiktokPage.keyboard.press('Control+A').catch(() => {});
+                    await tiktokPage.keyboard.press('Backspace').catch(() => {});
+                    await codeInput.type(code, { delay: 100 }).catch(() => {});
+                } catch (e) {}
+
                 await codeInput.evaluate((el, val) => {
-                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-                        window.HTMLInputElement.prototype, 'value'
-                    ).set;
-                    nativeInputValueSetter.call(el, val);
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    if (el.value !== val) {
+                        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                            window.HTMLInputElement.prototype, 'value'
+                        ).set;
+                        nativeInputValueSetter.call(el, val);
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
                 }, code);
-                log('Verification code entered');
+
+                log(`Verification code ${code} entered.`);
                 await tiktokPage.waitForTimeout(1000);
 
-                const verifyBtn = await tiktokPage.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Next")');
+                // Press Enter & Click submit button
+                await tiktokPage.keyboard.press('Enter').catch(() => {});
+                const verifyBtn = await tiktokPage.$('button:has-text("Verify"), button:has-text("Submit"), button:has-text("Confirm"), button:has-text("Next"), button[type="submit"]');
                 if (verifyBtn && await verifyBtn.isVisible().catch(() => false)) {
-                    await verifyBtn.click({ force: true });
-                    log('Clicked verify button');
+                    await verifyBtn.click({ force: true }).catch(() => {});
+                    log('Clicked verify/submit button');
                 }
 
-                await tiktokPage.waitForTimeout(5000);
+                // Poll for login success or explicit error for up to 15 seconds
+                log('Waiting for TikTok login verification response...');
+                let isSuccess = false;
+                let hasExplicitError = false;
 
-                const finalUrl = tiktokPage.url();
-                if (!finalUrl.includes('/login') && !finalUrl.includes('/passport')) {
+                for (let poll = 0; poll < 15; poll++) {
+                    await tiktokPage.waitForTimeout(1000);
+                    const currentUrl = tiktokPage.url();
+
+                    // Check URL redirection
+                    if (!currentUrl.includes('/login') && !currentUrl.includes('/passport')) {
+                        isSuccess = true;
+                        break;
+                    }
+
+                    // Check session cookies
+                    try {
+                        const cookies = await browser.cookies();
+                        const hasSessionCookie = cookies.some(c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_tt');
+                        if (hasSessionCookie) {
+                            isSuccess = true;
+                            break;
+                        }
+                    } catch (e) {}
+
+                    // Check avatar / logged in elements
+                    const avatarFound = await tiktokPage.$('[data-e2e="user-avatar"], [data-e2e="profile-icon"], header img, a[href*="/@"]').catch(() => null);
+                    if (avatarFound && await avatarFound.isVisible().catch(() => false)) {
+                        isSuccess = true;
+                        break;
+                    }
+
+                    // Check for explicit error message on page
+                    const pageText = await tiktokPage.evaluate(() => (document.body.innerText || '').toLowerCase()).catch(() => '');
+                    if (pageText.includes('incorrect code') || pageText.includes('invalid code') || pageText.includes('mã không đúng') || pageText.includes('expired') || pageText.includes('too many attempts')) {
+                        hasExplicitError = true;
+                        log('TikTok reported incorrect/invalid verification code.');
+                        break;
+                    }
+                }
+
+                if (isSuccess) {
                     log('Login successful after verification!');
+                    verified = true;
                     session.stats.step = 'complete';
                     return;
                 }
-                log(`Verification code ${code} rejected. Will retry with different code...`);
+
+                if (!hasExplicitError) {
+                    log('Verification submitted. Waiting additional 10s for page transition...');
+                    await tiktokPage.waitForTimeout(10000);
+                    const checkUrl = tiktokPage.url();
+                    if (!checkUrl.includes('/login') && !checkUrl.includes('/passport')) {
+                        log('Login successful after verification!');
+                        verified = true;
+                        session.stats.step = 'complete';
+                        return;
+                    }
+                }
+
+                log(`Verification code ${code} rejected or expired. Will retry...`);
                 session.stats.step = 'verification_retrying';
             }
 
@@ -5468,6 +6299,8 @@ async function runTikTokLogin(profile) {
             } catch (e) {
                 log(`Failed to save cookies: ${e.message}`);
             }
+            log('Login successful! Keeping browser open for 10 seconds before closing...');
+            await tiktokPage.waitForTimeout(10000).catch(() => new Promise(r => setTimeout(r, 10000)));
         }
         loggingInProfiles.delete(profileId);
         await browser.close().catch(() => null);
@@ -5482,30 +6315,108 @@ async function runTikTokLogin(profile) {
 
 const dismissPopups = async (page) => {
     if (!page) return false;
-    const modalSelectors = ['div[role="dialog"]', 'div[class*="modal"]', 'div[class*="Modal"]', 'div[class*="portal"]', 'div[class*="dialog"]'];
+
+    // --- Xử lý banner "A video you were editing wasn't saved" (không phải modal) ---
+    // Banner này xuất hiện ở TOP trang, không phải role="dialog"
+    try {
+        const draftBanner = await page.$('div:has-text("wasn\'t saved"):has(button:has-text("Discard")), div:has-text("Continue editing?"):has(button:has-text("Discard"))');
+        if (draftBanner && await draftBanner.isVisible()) {
+            const discardBtn = await page.$('button:has-text("Discard")');
+            if (discardBtn && await discardBtn.isVisible()) {
+                await discardBtn.click();
+                console.log('[dismissPopups] Dismissed draft banner "wasn\'t saved" → Discard');
+                await page.waitForTimeout(500);
+                return true;
+            }
+        }
+    } catch (e) { /* ignore */ }
+
+    // Các selector để tìm modal/popup - theo thứ tự ưu tiên (cụ thể nhất trước)
+    const modalSelectors = [
+        'div[role="dialog"]',
+        'div.TUXModal:not(.TUXModal-overlay)',   // TikTok modal chính (không phải overlay)
+        'div[class*="common-modal"]:not([class*="overlay"])',
+        'div[class*="modal"]:not([class*="overlay"])',
+        'div[class*="Modal"]:not([class*="overlay"])',
+        'div[class*="portal"]',
+        'div[class*="dialog"]',
+    ];
+
     for (const modalSel of modalSelectors) {
         try {
-            const modal = await page.$(modalSel);
-            if (modal && await modal.isVisible()) {
-                const text = await modal.innerText();
-                if (text.includes("Are you sure you want to exit")) {
-                    const cancelBtn = await modal.$('button:has-text("Cancel")');
-                    if (cancelBtn) await cancelBtn.click();
-                    return true;
-                }
-                const btnSelectors = ['button:has-text("Turn on")', 'button:has-text("Allow")', 'button:has-text("Got it")', 'button:has-text("Skip")', 'button:has-text("Cancel")'];
-                for (const btnSel of btnSelectors) {
-                    const btn = await modal.$(btnSel);
-                    if (btn && await btn.isVisible()) {
-                        await btn.click();
-                        return true;
+            // Dùng $$ để lấy TẤT CẢ elements match, không chỉ phần tử đầu tiên
+            const modals = await page.$$(modalSel);
+            for (const modal of modals) {
+                try {
+                    if (!await modal.isVisible()) continue;
+
+                    const text = await modal.innerText().catch(() => '');
+                    if (!text.trim()) continue;
+
+                    // --- Popup "Turn on automatic content checks?" ---
+                    // → Click Cancel để từ chối (không muốn bật)
+                    if (text.includes("automatic content checks") || text.includes("content checks") || text.includes("Turn on automatic")) {
+                        const cancelBtn = await modal.$('button:has-text("Cancel")');
+                        if (cancelBtn && await cancelBtn.isVisible()) {
+                            await cancelBtn.click();
+                            console.log('[dismissPopups] Dismissed "Turn on automatic content checks" popup → Cancel');
+                            return true;
+                        }
                     }
-                }
+
+                    // --- Popup "Are you sure you want to exit?" ---
+                    // → Click Cancel để ở lại trang upload
+                    if (text.includes("Are you sure you want to exit") || text.includes("want to leave") || text.includes("Leave page")) {
+                        const cancelBtn = await modal.$('button:has-text("Cancel"), button:has-text("Stay"), button:has-text("No")');
+                        if (cancelBtn && await cancelBtn.isVisible()) {
+                            await cancelBtn.click();
+                            console.log('[dismissPopups] Dismissed "exit/leave" confirmation popup → Cancel/Stay');
+                            return true;
+                        }
+                    }
+
+                    // --- Popup "Discard this post?" ---
+                    if (text.includes("Discard this post") || text.includes("discarded permanently")) {
+                        const notNowBtn = await modal.$('button:has-text("Not now")');
+                        if (notNowBtn && await notNowBtn.isVisible()) {
+                            await notNowBtn.click();
+                            console.log('[dismissPopups] Dismissed "Discard this post?" popup → Not now');
+                            return true;
+                        }
+                        const discardBtn = await modal.$('button:has-text("Discard")');
+                        if (discardBtn && await discardBtn.isVisible()) {
+                            await discardBtn.click();
+                            console.log('[dismissPopups] Dismissed "Discard this post?" popup → Discard');
+                            return true;
+                        }
+                    }
+
+                    // --- Các popup chung: Got it, Allow, Skip, OK ---
+                    const genericBtnSelectors = [
+                        'button:has-text("Got it")',
+                        'button:has-text("Allow")',
+                        'button:has-text("Not now")',
+                        'button:has-text("Skip")',
+                        'button:has-text("OK")',
+                        'button:has-text("Okay")',
+                        'button:has-text("Close")',
+                    ];
+                    for (const btnSel of genericBtnSelectors) {
+                        const btn = await modal.$(btnSel);
+                        if (btn && await btn.isVisible()) {
+                            await btn.click();
+                            console.log(`[dismissPopups] Dismissed generic popup → ${btnSel}`);
+                            return true;
+                        }
+                    }
+                } catch (innerE) { /* ignore per-modal errors */ }
             }
-        } catch (e) { }
+        } catch (e) { /* ignore selector errors */ }
     }
     return false;
 };
+
+
 
 // Background Scheduler
 function checkAndRunSchedules() {
