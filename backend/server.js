@@ -4,7 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
-import Database from 'better-sqlite3';
+import db from './db.js';
+import runMigrations from './migrate.js';
 import { exec, spawn, execSync, execFileSync } from 'child_process';
 import axios from 'axios';
 import {
@@ -69,287 +70,72 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 if (!fs.existsSync(EXTENSIONS_DIR)) fs.mkdirSync(EXTENSIONS_DIR);
 if (!fs.existsSync(DUMMY_VIDEOS_DIR)) fs.mkdirSync(DUMMY_VIDEOS_DIR);
 
-// Init SQLite DB
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-db.pragma('busy_timeout = 10000');
-
-// Create tables
-db.exec(`
-    CREATE TABLE IF NOT EXISTS profiles (
-        id TEXT PRIMARY KEY,
-        name TEXT UNIQUE,
-        status TEXT DEFAULT 'idle',
-        video_folder TEXT,
-        proxy TEXT,
-        is_scheduled INTEGER DEFAULT 0,
-        last_run TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS config (
-        key TEXT PRIMARY KEY,
-        value TEXT
-    );
-    CREATE TABLE IF NOT EXISTS profile_schedules (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        profile_id TEXT,
-        time TEXT,
-        FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE
-    );
-`);
-
-// Migration: Add proxy column if not exists
-try {
-    const tableInfo = db.prepare("PRAGMA table_info(profiles)").all();
-    const hasProxy = tableInfo.some(col => col.name === 'proxy');
-    if (!hasProxy) {
-        db.exec("ALTER TABLE profiles ADD COLUMN proxy TEXT;");
-        console.log('Added proxy column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (proxy column):', err);
-}
-
-// Migration: Add is_scheduled column if not exists
-try {
-    const tableInfo = db.prepare("PRAGMA table_info(profiles)").all();
-    const hasScheduled = tableInfo.some(col => col.name === 'is_scheduled');
-    if (!hasScheduled) {
-        db.exec("ALTER TABLE profiles ADD COLUMN is_scheduled INTEGER DEFAULT 0;");
-        console.log('Added is_scheduled column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (is_scheduled column):', err);
-}
-
-initGroupSchema(db);
-
-// Migration: Add group_id column to profiles if not exists
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasGroupId = tableInfo.some((col) => col.name === 'group_id');
-    if (!hasGroupId) {
-        db.exec('ALTER TABLE profiles ADD COLUMN group_id TEXT;');
-        console.log('Added group_id column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (group_id column):', err);
-}
-
-// Migration: set_music — khi bật mới chạy Edit video + chọn nhạc khi upload
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasSetMusic = tableInfo.some((col) => col.name === 'set_music');
-    if (!hasSetMusic) {
-        db.exec('ALTER TABLE profiles ADD COLUMN set_music INTEGER DEFAULT 0;');
-        db.prepare('UPDATE profiles SET set_music = 1').run();
-        console.log('Added set_music column to profiles (existing rows default to on)');
-    }
-} catch (err) {
-    console.error('Migration error (set_music column):', err);
-}
-
-// Migration: auto_increment_schedule — Lên lịch nối tiếp (+5 phút mỗi video)
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasAutoIncrement = tableInfo.some((col) => col.name === 'auto_increment_schedule');
-    if (!hasAutoIncrement) {
-        db.exec('ALTER TABLE profiles ADD COLUMN auto_increment_schedule INTEGER DEFAULT 0;');
-        console.log('Added auto_increment_schedule column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (auto_increment_schedule column):', err);
-}
-
-// Migration: upload_count — Số lượng video upload mỗi lần
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasUploadCount = tableInfo.some((col) => col.name === 'upload_count');
-    if (!hasUploadCount) {
-        db.exec('ALTER TABLE profiles ADD COLUMN upload_count INTEGER DEFAULT 1;');
-        console.log('Added upload_count column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (upload_count column):', err);
-}
-// Migration: channel_ids — Danh sách ID channel quản lý (cách nhau bằng dấu ,)
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasChannelIds = tableInfo.some((col) => col.name === 'channel_ids');
-    if (!hasChannelIds) {
-        db.exec('ALTER TABLE profiles ADD COLUMN channel_ids TEXT;');
-        console.log('Added channel_ids column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (channel_ids column):', err);
-}
-
-// Migration: needs_render — Xác định profile này có cần render video bypass không
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasNeedsRender = tableInfo.some((col) => col.name === 'needs_render');
-    if (!hasNeedsRender) {
-        db.exec('ALTER TABLE profiles ADD COLUMN needs_render INTEGER DEFAULT 1;');
-        console.log('Added needs_render column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (needs_render column):', err);
-}
-
-// Migration: render_concat_video — Xác định profile này có nối video render thay vì bypass render không
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasRenderConcatVideo = tableInfo.some((col) => col.name === 'render_concat_video');
-    if (!hasRenderConcatVideo) {
-        db.exec('ALTER TABLE profiles ADD COLUMN render_concat_video INTEGER DEFAULT 0;');
-        console.log('Added render_concat_video column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (render_concat_video column):', err);
-}
-
-// Migration: remove_title — Xác định profile này có xóa tiêu đề mặc định khi upload không
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasRemoveTitle = tableInfo.some((col) => col.name === 'remove_title');
-    if (!hasRemoveTitle) {
-        db.exec('ALTER TABLE profiles ADD COLUMN remove_title INTEGER DEFAULT 1;');
-        console.log('Added remove_title column to profiles table with default 1');
-    }
-} catch (err) {
-    console.error('Migration error (remove_title column):', err);
-}
-
-// Migration: render_video_long — Xác định profile này có xử lý video dài không
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasRenderVideoLong = tableInfo.some((col) => col.name === 'render_video_long');
-    if (!hasRenderVideoLong) {
-        db.exec('ALTER TABLE profiles ADD COLUMN render_video_long INTEGER DEFAULT 0;');
-        console.log('Added render_video_long column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (render_video_long column):', err);
-}
-
-// Migration: need_content_check — Xác định profile này có cần check content không
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasNeedContentCheck = tableInfo.some((col) => col.name === 'need_content_check');
-    if (!hasNeedContentCheck) {
-        db.exec('ALTER TABLE profiles ADD COLUMN need_content_check INTEGER DEFAULT 1;');
-        console.log('Added need_content_check column to profiles table with default 1');
-    }
-} catch (err) {
-    console.error('Migration error (need_content_check column):', err);
-}
-
-// Migration: account_id, pass, email, pass_email — CSV import fields
-const csvImportFields = [
-    { name: 'account_id', type: 'TEXT' },
-    { name: 'pass', type: 'TEXT' },
-    { name: 'email', type: 'TEXT' },
-    { name: 'pass_email', type: 'TEXT' },
-];
-for (const field of csvImportFields) {
-    try {
-        const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-        const hasField = tableInfo.some((col) => col.name === field.name);
-        if (!hasField) {
-            db.exec(`ALTER TABLE profiles ADD COLUMN ${field.name} ${field.type};`);
-            console.log(`Added ${field.name} column to profiles table`);
+// Clean stale Singleton lock files that prevent Chromium from launching
+// (left behind after crashes or force-kills)
+function cleanSingletonLock(userDataDir) {
+    const lockFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+    lockFiles.forEach(file => {
+        const filePath = path.join(userDataDir, file);
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                console.log(`[Cleanup] Removed stale lock: ${filePath}`);
+            }
+        } catch (e) {
+            // ignore - file might not exist or be in use
         }
-    } catch (err) {
-        console.error(`Migration error (${field.name} column):`, err);
-    }
+    });
 }
 
-// Migration: avatar_image — path to avatar image file for profile
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasAvatarImage = tableInfo.some((col) => col.name === 'avatar_image');
-    if (!hasAvatarImage) {
-        db.exec('ALTER TABLE profiles ADD COLUMN avatar_image TEXT;');
-        console.log('Added avatar_image column to profiles table');
+// Wrapper around chromium.launchPersistentContext that cleans stale locks first
+async function launchBrowser(userDataDir, options) {
+    if (fs.existsSync(userDataDir)) {
+        cleanSingletonLock(userDataDir);
     }
-} catch (err) {
-    console.error('Migration error (avatar_image column):', err);
+    return chromium.launchPersistentContext(userDataDir, options);
 }
 
-// Migration: music_search — search term for adding favorite music
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasMusicSearch = tableInfo.some((col) => col.name === 'music_search');
-    if (!hasMusicSearch) {
-        db.exec('ALTER TABLE profiles ADD COLUMN music_search TEXT;');
-        console.log('Added music_search column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (music_search column):', err);
-}
+// Init PostgreSQL — run migrations on startup
+await runMigrations();
 
-// Migration: cookies — JSON cookie array for cookie-based login
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasCookies = tableInfo.some((col) => col.name === 'cookies');
-    if (!hasCookies) {
-        db.exec('ALTER TABLE profiles ADD COLUMN cookies TEXT;');
-        console.log('Added cookies column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (cookies column):', err);
-}
-
-// Migration: schedule_interval — Khoảng cách thời gian lên lịch (5 hoặc 10 phút, mặc định 5)
-try {
-    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
-    const hasScheduleInterval = tableInfo.some((col) => col.name === 'schedule_interval');
-    if (!hasScheduleInterval) {
-        db.exec('ALTER TABLE profiles ADD COLUMN schedule_interval INTEGER DEFAULT 5;');
-        console.log('Added schedule_interval column to profiles table');
-    }
-} catch (err) {
-    console.error('Migration error (schedule_interval column):', err);
-}
-
-// Migration from db.json
+// Migration from db.json (if exists)
 if (fs.existsSync(OLD_DB_PATH)) {
     try {
         const oldData = JSON.parse(fs.readFileSync(OLD_DB_PATH, 'utf-8'));
         if (oldData.profiles) {
-            const insertProfile = db.prepare('INSERT OR IGNORE INTO profiles (id, name, status) VALUES (?, ?, ?)');
+            const insertProfile = db.prepare('INSERT INTO profiles (id, name, status) VALUES (?, ?, ?) ON CONFLICT (id) DO NOTHING');
             for (const p of oldData.profiles) {
-                insertProfile.run(p.id, p.name, p.status || 'idle');
+                await insertProfile.run(p.id, p.name, p.status || 'idle');
             }
         }
         if (oldData.config) {
-            const insertConfig = db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)');
-            Object.entries(oldData.config).forEach(([k, v]) => {
-                insertConfig.run(k, String(v));
-            });
+            const insertConfig = db.prepare('INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value');
+            for (const [k, v] of Object.entries(oldData.config)) {
+                await insertConfig.run(k, String(v));
+            }
         }
         // Rename old DB to avoid repeat migration
         fs.renameSync(OLD_DB_PATH, OLD_DB_PATH + '.bak');
-        console.log('Migrated data from db.json to SQLite');
+        console.log('Migrated data from db.json to PostgreSQL');
     } catch (err) {
         console.error('Migration error:', err);
     }
 }
 
 // Default config if missing
-const getConfig = (key, defaultValue) => {
-    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(key);
+const getConfig = async (key, defaultValue) => {
+    const row = await db.prepare('SELECT value FROM config WHERE key = ?').get(key);
     return row ? row.value : defaultValue;
 };
-const setConfig = (key, value) => {
-    db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(key, String(value));
+const setConfig = async (key, value) => {
+    await db.prepare('INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value').run(key, String(value));
 };
 
-if (!getConfig('videoFolder', null)) setConfig('videoFolder', UPLOADS_DIR);
-if (!getConfig('maxConcurrency', null)) setConfig('maxConcurrency', '2');
+if (!(await getConfig('videoFolder', null))) await setConfig('videoFolder', UPLOADS_DIR);
+if (!(await getConfig('maxConcurrency', null))) await setConfig('maxConcurrency', '2');
 
 // Cleanup: Reset any stuck profiles to "idle" on startup
-db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'logging_in', 'changing_avatar', 'adding_favorite_music')").run();
+await db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'logging_in', 'changing_avatar', 'adding_favorite_music')").run();
 console.log('Reset stuck profiles (uploading, logging_in, changing_avatar, adding_favorite_music) to idle');
 
 function normalizeGroupId(value) {
@@ -444,14 +230,14 @@ async function injectProfileCookies(browser, profile) {
 }
 
 // API Routes
-app.get('/api/profiles', (req, res) => {
-    const profiles = db
+app.get('/api/profiles', async (req, res) => {
+    const profiles = await db
         .prepare(
             `
             SELECT
                 p.*,
                 g.name AS group_name,
-                (SELECT group_concat(time) FROM profile_schedules WHERE profile_id = p.id) as schedules
+                (SELECT string_agg(time, ',') FROM profile_schedules WHERE profile_id = p.id) as schedules
             FROM profiles p
             LEFT JOIN groups g ON g.id = p.group_id
             ORDER BY p.created_at DESC
@@ -464,7 +250,7 @@ app.get('/api/profiles', (req, res) => {
     })));
 });
 
-app.post('/api/profiles', (req, res) => {
+app.post('/api/profiles', async (req, res) => {
     const { name, group_id, video_folder, channel_ids, need_content_check, render_video_long, set_music, render_concat_video } = req.body;
 
     try {
@@ -531,25 +317,25 @@ function parseCSV(csvText) {
     return { headers, rows };
 }
 
-function findOrCreateGroupByName(db, groupName) {
+async function findOrCreateGroupByName(db, groupName) {
     if (!groupName || groupName.trim() === '') return null;
 
     const trimmed = groupName.trim();
-    const existing = db.prepare('SELECT id FROM groups WHERE LOWER(name) = LOWER(?)').get(trimmed);
+    const existing = await db.prepare('SELECT id FROM groups WHERE LOWER(name) = LOWER(?)').get(trimmed);
     if (existing) return existing.id;
 
     const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
     try {
-        db.prepare('INSERT INTO groups (id, name) VALUES (?, ?)').run(id, trimmed);
+        await db.prepare('INSERT INTO groups (id, name) VALUES (?, ?)').run(id, trimmed);
         return id;
     } catch (e) {
         // Race condition: another import may have created it
-        const retry = db.prepare('SELECT id FROM groups WHERE LOWER(name) = LOWER(?)').get(trimmed);
+        const retry = await db.prepare('SELECT id FROM groups WHERE LOWER(name) = LOWER(?)').get(trimmed);
         return retry ? retry.id : null;
     }
 }
 
-app.post('/api/profiles/import-csv', (req, res) => {
+app.post('/api/profiles/import-csv', async (req, res) => {
     const { csvText } = req.body;
     if (!csvText || typeof csvText !== 'string') {
         return res.status(400).json({ error: 'csvText is required' });
@@ -571,7 +357,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
         `);
 
         const existingNames = new Set(
-            db.prepare('SELECT name FROM profiles').all().map((r) => r.name.toLowerCase())
+            await db.prepare('SELECT name FROM profiles').all().map((r) => r.name.toLowerCase())
         );
 
         for (const row of rows) {
@@ -591,7 +377,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
             const groupName = (row.group_name || row.group || '').trim();
             let groupId = null;
             if (groupName) {
-                groupId = findOrCreateGroupByName(db, groupName);
+                groupId = await findOrCreateGroupByName(db, groupName);
             }
 
             let accountId = (row.account_id || '').trim() || null;
@@ -619,7 +405,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
                 if (videoFolder) {
                     fs.mkdirSync(videoFolder, { recursive: true });
                 }
-                insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail, cookies, musicSearch);
+                await insertProfile.run(id, profileName, groupId, videoFolder, accountId, pass, email, passEmail, cookies, musicSearch);
                 existingNames.add(profileName.toLowerCase());
                 results.imported++;
             } catch (e) {
@@ -635,7 +421,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
     }
 });
 
-app.post('/api/profiles/import-folder', (req, res) => {
+app.post('/api/profiles/import-folder', async (req, res) => {
     const { folderPath } = req.body;
     if (!folderPath || typeof folderPath !== 'string') {
         return res.status(400).json({ error: 'folderPath is required' });
@@ -679,7 +465,7 @@ app.post('/api/profiles/import-folder', (req, res) => {
         `);
 
         const existingNames = new Set(
-            db.prepare('SELECT name FROM profiles').all().map((r) => r.name.toLowerCase())
+            await db.prepare('SELECT name FROM profiles').all().map((r) => r.name.toLowerCase())
         );
 
         const cookiesDir = path.join(resolvedPath, 'cookies');
@@ -712,7 +498,7 @@ app.post('/api/profiles/import-folder', (req, res) => {
             const groupName = (account.group || '').trim();
             let groupId = null;
             if (groupName) {
-                groupId = findOrCreateGroupByName(db, groupName);
+                groupId = await findOrCreateGroupByName(db, groupName);
             }
 
             let cookiesContent = null;
@@ -738,7 +524,7 @@ app.post('/api/profiles/import-folder', (req, res) => {
                 if (videoFolder) {
                     fs.mkdirSync(videoFolder, { recursive: true });
                 }
-                insertProfile.run(id, profileName, groupId, videoFolder, accountId, null, null, null, cookiesContent, null, proxy);
+                await insertProfile.run(id, profileName, groupId, videoFolder, accountId, null, null, null, cookiesContent, null, proxy);
                 existingNames.add(profileName.toLowerCase());
                 results.imported++;
             } catch (e) {
@@ -771,7 +557,7 @@ app.post('/api/profiles/export-folder', async (req, res) => {
         }
 
         // Fetch group names mapping
-        const groupRows = db.prepare('SELECT id, name FROM groups').all();
+        const groupRows = await db.prepare('SELECT id, name FROM groups').all();
         const groupMap = new Map(groupRows.map(g => [g.id, g.name]));
 
         // Determine output directory
@@ -800,7 +586,7 @@ app.post('/api/profiles/export-folder', async (req, res) => {
             if (!accountId) {
                 accountId = 'qr' + Math.random().toString(36).substring(2, 12);
                 try {
-                    updateAccountIdStmt.run(accountId, profile.id);
+                    await updateAccountIdStmt.run(accountId, profile.id);
                 } catch (e) {}
             }
 
@@ -912,7 +698,7 @@ app.post('/api/profiles/export-folder', async (req, res) => {
     }
 });
 
-app.get('/api/profiles/download-export-zip', (req, res) => {
+app.get('/api/profiles/download-export-zip', async (req, res) => {
     try {
         const fileName = req.query.file;
         if (!fileName || !fileName.endsWith('.zip')) {
@@ -934,7 +720,7 @@ app.delete('/api/profiles/:id', async (req, res) => {
     const profileId = req.params.id;
     try {
         // 1. Get profile info before deleting from DB
-        const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+        const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         
         if (profile) {
             console.log(`[System] Deleting profile ${profile.name}...`);
@@ -1009,7 +795,7 @@ app.delete('/api/profiles/:id', async (req, res) => {
         }
 
         // Delete from Database
-        db.prepare('DELETE FROM profiles WHERE id = ?').run(profileId);
+        await db.prepare('DELETE FROM profiles WHERE id = ?').run(profileId);
         res.json({ success: true });
     } catch (err) {
         console.error(`[System] Error during profile deletion: ${err.message}`);
@@ -1025,7 +811,7 @@ app.post('/api/profiles/delete-multiple', async (req, res) => {
 
     try {
         for (const profileId of profileIds) {
-            const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+            const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
             
             if (profile) {
                 console.log(`[System] Deleting profile ${profile.name}...`);
@@ -1100,7 +886,7 @@ app.post('/api/profiles/delete-multiple', async (req, res) => {
             }
 
             // Delete from Database
-            db.prepare('DELETE FROM profiles WHERE id = ?').run(profileId);
+            await db.prepare('DELETE FROM profiles WHERE id = ?').run(profileId);
         }
         res.json({ success: true, count: profileIds.length });
     } catch (err) {
@@ -1111,7 +897,7 @@ app.post('/api/profiles/delete-multiple', async (req, res) => {
 
 // POST /api/profiles/clear-trash — Clear cache/trash from profile folders to free disk space
 // Safely removes only Chromium cache directories, preserving auth (Cookies, Login Data, Local Storage, Preferences)
-app.post('/api/profiles/clear-trash', (req, res) => {
+app.post('/api/profiles/clear-trash', async (req, res) => {
     const { profileIds } = req.body;
     if (!profileIds || !Array.isArray(profileIds) || profileIds.length === 0) {
         return res.status(400).json({ error: 'profileIds array is required' });
@@ -1162,7 +948,7 @@ app.post('/api/profiles/clear-trash', (req, res) => {
     let totalFreedBytes = 0;
 
     for (const profileId of profileIds) {
-        const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+        const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         if (!profile) {
             results.push({ profileId, profileName: '(unknown)', error: 'Profile not found', freedBytes: 0 });
             continue;
@@ -1323,12 +1109,12 @@ app.post('/api/system/clear-debug', (req, res) => {
     }
 });
 
-app.patch('/api/profiles/:id', (req, res) => {
+app.patch('/api/profiles/:id', async (req, res) => {
     const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
-    const currentProfile = db.prepare('SELECT name FROM profiles WHERE id = ?').get(profileId);
+    const currentProfile = await db.prepare('SELECT name FROM profiles WHERE id = ?').get(profileId);
     if (!currentProfile) return res.status(404).json({ error: 'Profile not found' });
 
     if ('group_id' in req.body) {
@@ -1343,7 +1129,7 @@ app.patch('/api/profiles/:id', (req, res) => {
                         .json({ error: err.message });
                 }
             }
-            db.prepare('UPDATE profiles SET group_id = ? WHERE id = ?').run(
+            await db.prepare('UPDATE profiles SET group_id = ? WHERE id = ?').run(
                 normalizedGroupId,
                 profileId
             );
@@ -1353,7 +1139,7 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (name !== undefined) {
         if (currentProfile.name !== name) {
             // Check if new name exists
-            const existing = db.prepare('SELECT id FROM profiles WHERE name = ?').get(name);
+            const existing = await db.prepare('SELECT id FROM profiles WHERE name = ?').get(name);
             if (existing) return res.status(400).json({ error: 'Profile name already exists' });
 
             // Rename folder
@@ -1364,7 +1150,7 @@ app.patch('/api/profiles/:id', (req, res) => {
                     fs.renameSync(oldPath, newPath);
                     console.log(`Renamed profile folder from ${currentProfile.name} to ${name}`);
                 }
-                const result = db.prepare('UPDATE profiles SET name = ? WHERE id = ?').run(name, profileId);
+                const result = await db.prepare('UPDATE profiles SET name = ? WHERE id = ?').run(name, profileId);
                 console.log(`Database update for name: ${result.changes} rows affected`);
             } catch (err) {
                 console.error('Rename folder error:', err);
@@ -1373,135 +1159,135 @@ app.patch('/api/profiles/:id', (req, res) => {
         }
     }
     if (video_folder !== undefined) {
-        db.prepare('UPDATE profiles SET video_folder = ? WHERE id = ?').run(video_folder, profileId);
+        await db.prepare('UPDATE profiles SET video_folder = ? WHERE id = ?').run(video_folder, profileId);
     }
     if (proxy !== undefined) {
-        db.prepare('UPDATE profiles SET proxy = ? WHERE id = ?').run(proxy, profileId);
+        await db.prepare('UPDATE profiles SET proxy = ? WHERE id = ?').run(proxy, profileId);
     }
     if (is_scheduled !== undefined) {
         const val = is_scheduled ? 1 : 0;
-        db.prepare('UPDATE profiles SET is_scheduled = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET is_scheduled = ? WHERE id = ?').run(val, profileId);
     }
     if (set_music !== undefined) {
         const val = set_music ? 1 : 0;
-        db.prepare('UPDATE profiles SET set_music = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET set_music = ? WHERE id = ?').run(val, profileId);
     }
     if (auto_increment_schedule !== undefined) {
         const val = auto_increment_schedule ? 1 : 0;
-        db.prepare('UPDATE profiles SET auto_increment_schedule = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET auto_increment_schedule = ? WHERE id = ?').run(val, profileId);
     }
     if (schedule_interval !== undefined) {
         const intervalNum = Number(schedule_interval);
         const val = [5, 10, 15, 20].includes(intervalNum) ? intervalNum : 5;
-        db.prepare('UPDATE profiles SET schedule_interval = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET schedule_interval = ? WHERE id = ?').run(val, profileId);
     }
     if (upload_count !== undefined) {
-        db.prepare('UPDATE profiles SET upload_count = ? WHERE id = ?').run(upload_count, profileId);
+        await db.prepare('UPDATE profiles SET upload_count = ? WHERE id = ?').run(upload_count, profileId);
     }
     if (channel_ids !== undefined) {
-        db.prepare('UPDATE profiles SET channel_ids = ? WHERE id = ?').run(channel_ids, profileId);
+        await db.prepare('UPDATE profiles SET channel_ids = ? WHERE id = ?').run(channel_ids, profileId);
     }
     if (needs_render !== undefined) {
         const val = needs_render ? 1 : 0;
-        db.prepare('UPDATE profiles SET needs_render = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET needs_render = ? WHERE id = ?').run(val, profileId);
     }
     if (remove_title !== undefined) {
         const val = remove_title ? 1 : 0;
-        db.prepare('UPDATE profiles SET remove_title = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET remove_title = ? WHERE id = ?').run(val, profileId);
     }
     if (need_content_check !== undefined) {
         const val = need_content_check ? 1 : 0;
-        db.prepare('UPDATE profiles SET need_content_check = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET need_content_check = ? WHERE id = ?').run(val, profileId);
     }
     if (render_video_long !== undefined) {
         const val = render_video_long ? 1 : 0;
-        db.prepare('UPDATE profiles SET render_video_long = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET render_video_long = ? WHERE id = ?').run(val, profileId);
     }
     if (render_concat_video !== undefined) {
         const val = render_concat_video ? 1 : 0;
-        db.prepare('UPDATE profiles SET render_concat_video = ? WHERE id = ?').run(val, profileId);
+        await db.prepare('UPDATE profiles SET render_concat_video = ? WHERE id = ?').run(val, profileId);
     }
     if (cookies !== undefined) {
-        db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?').run(cookies, profileId);
+        await db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?').run(cookies, profileId);
     }
     if (music_search !== undefined) {
-        db.prepare('UPDATE profiles SET music_search = ? WHERE id = ?').run(music_search, profileId);
+        await db.prepare('UPDATE profiles SET music_search = ? WHERE id = ?').run(music_search, profileId);
     }
 
     res.json({ success: true });
 });
 
-app.get('/api/groups', (req, res) => {
+app.get('/api/groups', async (req, res) => {
     try {
-        res.json(listGroups(db));
+        res.json(await listGroups(db));
     } catch (err) {
         res.status(err.status || 400).json({ error: err.message });
     }
 });
 
-app.post('/api/groups', (req, res) => {
+app.post('/api/groups', async (req, res) => {
     try {
         const rawId = req.body.id;
         const id =
             typeof rawId === 'string' && rawId.trim() !== ''
                 ? rawId.trim()
                 : randomUUID();
-        createGroup(db, { id, name: req.body.name });
+        await createGroup(db, { id, name: req.body.name });
         res.json({ success: true, id });
     } catch (err) {
         res.status(err.status || 400).json({ error: err.message });
     }
 });
 
-app.patch('/api/groups/:id', (req, res) => {
+app.patch('/api/groups/:id', async (req, res) => {
     try {
-        renameGroup(db, { id: req.params.id, name: req.body.name });
+        await renameGroup(db, { id: req.params.id, name: req.body.name });
         res.json({ success: true });
     } catch (err) {
         res.status(err.status || 400).json({ error: err.message });
     }
 });
 
-app.delete('/api/groups/:id', (req, res) => {
+app.delete('/api/groups/:id', async (req, res) => {
     try {
-        deleteGroup(db, req.params.id);
+        await deleteGroup(db, req.params.id);
         res.json({ success: true });
     } catch (err) {
         res.status(err.status || 400).json({ error: err.message });
     }
 });
 
-app.get('/api/profiles/:id/schedules', (req, res) => {
+app.get('/api/profiles/:id/schedules', async (req, res) => {
     try {
-        const schedules = db.prepare('SELECT time FROM profile_schedules WHERE profile_id = ? ORDER BY time ASC').all(req.params.id);
+        const schedules = await db.prepare('SELECT time FROM profile_schedules WHERE profile_id = ? ORDER BY time ASC').all(req.params.id);
         res.json(schedules.map(s => s.time));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.post('/api/profiles/:id/schedules', (req, res) => {
+app.post('/api/profiles/:id/schedules', async (req, res) => {
     const { times } = req.body; // Array of "HH:mm"
     if (!Array.isArray(times)) return res.status(400).json({ error: 'times must be an array' });
 
     try {
-        db.transaction(() => {
-            db.prepare('DELETE FROM profile_schedules WHERE profile_id = ?').run(req.params.id);
-            const insert = db.prepare('INSERT INTO profile_schedules (profile_id, time) VALUES (?, ?)');
+        await db.transaction(async (tdb) => {
+            await tdb.prepare('DELETE FROM profile_schedules WHERE profile_id = ?').run(req.params.id);
+            const insert = tdb.prepare('INSERT INTO profile_schedules (profile_id, time) VALUES (?, ?)');
             for (const time of times) {
                 if (/^\d{2}:\d{2}$/.test(time)) {
-                    insert.run(req.params.id, time);
+                    await insert.run(req.params.id, time);
                 }
             }
-        })();
+        });
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.get('/api/config', (req, res) => {
-    const rows = db.prepare('SELECT * FROM config').all();
+app.get('/api/config', async (req, res) => {
+    const rows = await db.prepare('SELECT * FROM config').all();
     const config = {};
     rows.forEach(r => {
         // Convert to number if possible
@@ -1555,8 +1341,10 @@ app.post('/api/select-image-file', (req, res) => {
     });
 });
 
-app.post('/api/config', (req, res) => {
-    Object.entries(req.body).forEach(([k, v]) => setConfig(k, v));
+app.post('/api/config', async (req, res) => {
+    for (const [k, v] of Object.entries(req.body)) {
+        await setConfig(k, v);
+    }
     res.json({ success: true });
 });
 
@@ -1593,14 +1381,14 @@ app.post('/api/upload_new_video', async (req, res) => {
     // Find profile
     let profile = null;
     if (profile_id) {
-        profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile_id);
+        profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile_id);
     } else if (profile_name) {
-        profile = db.prepare('SELECT * FROM profiles WHERE name = ?').get(profile_name);
+        profile = await db.prepare('SELECT * FROM profiles WHERE name = ?').get(profile_name);
     }
 
     if (!profile) {
         // Fallback to channel_id lookup
-        const profiles = db.prepare('SELECT * FROM profiles').all();
+        const profiles = await db.prepare('SELECT * FROM profiles').all();
         profile = profiles.find(p => {
             if (!p.channel_ids) return false;
             const ids = p.channel_ids.split(',').map(id => id.trim());
@@ -1666,7 +1454,7 @@ app.post('/api/upload_new_video', async (req, res) => {
     try {
 
         // Determine destination folder
-        const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+        const videoFolder = profile.video_folder || await getConfig('videoFolder', UPLOADS_DIR);
         if (!fs.existsSync(videoFolder)) {
             fs.mkdirSync(videoFolder, { recursive: true });
         }
@@ -1930,7 +1718,7 @@ app.post('/api/upload_new_video', async (req, res) => {
         }
 
         // Re-fetch profile to get the latest settings in case the user changed them during a long download
-        const latestProfile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile.id);
+        const latestProfile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile.id);
         if (latestProfile) profile = latestProfile;
 
         // Check if render is needed based on profile configuration
@@ -2150,7 +1938,7 @@ app.post('/api/upload-profile', async (req, res) => {
     }
 
     // Find profile by name
-    const profile = db.prepare('SELECT * FROM profiles WHERE name = ?').get(profile_name);
+    const profile = await db.prepare('SELECT * FROM profiles WHERE name = ?').get(profile_name);
     if (!profile) {
         return res.status(404).json({ error: `Profile not found: ${profile_name}` });
     }
@@ -2200,7 +1988,7 @@ app.post('/api/upload-profile', async (req, res) => {
 
     try {
         // Determine destination folder
-        const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+        const videoFolder = profile.video_folder || await getConfig('videoFolder', UPLOADS_DIR);
         if (!fs.existsSync(videoFolder)) {
             fs.mkdirSync(videoFolder, { recursive: true });
         }
@@ -2523,7 +2311,7 @@ app.post('/api/upload-profile', async (req, res) => {
         }
 
         // Re-fetch profile to get the latest settings
-        const latestProfile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile.id);
+        const latestProfile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profile.id);
         const currentProfile = latestProfile || profile;
 
         // Check if render is needed based on profile configuration
@@ -2737,14 +2525,14 @@ app.post('/api/start', async (req, res) => {
     const { profileId, profileIds, runMode, limitUploads, uploadLimitCount } = req.body;
 
     if (profileId) {
-        const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+        const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         if (!profile) return res.status(404).json({ error: 'Profile not found' });
         if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) return res.status(400).json({ error: 'Profile already running or processing a video' });
 
         runSingleProfile(profile, !!limitUploads, Number(uploadLimitCount) || 0);
         return res.json({ status: 'started', profile: profile.name });
     } else {
-        const allRows = db.prepare('SELECT * FROM profiles').all();
+        const allRows = await db.prepare('SELECT * FROM profiles').all();
         let profiles = allRows;
         if (Array.isArray(profileIds) && profileIds.length > 0) {
             const byId = new Map(allRows.map((p) => [String(p.id), p]));
@@ -2777,7 +2565,7 @@ app.post('/api/open-profile', async (req, res) => {
     const { profileId } = req.body;
     if (!profileId) return res.status(400).json({ error: 'Profile ID is required' });
 
-    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
     if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
@@ -2848,7 +2636,7 @@ async function changeAvatar(profile, avatarImage) {
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
     await injectProfileCookies(browser, profile);
     avatarChangingProfiles.add(profileId);
-    db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
+    await db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
 
     log('Avatar change session started');
 
@@ -2975,7 +2763,7 @@ async function changeAvatar(profile, avatarImage) {
     } finally {
         avatarChangingProfiles.delete(profileId);
         await browser.close().catch(() => null);
-        db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
+        await db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
         log('Avatar change session ended, browser closed.');
     }
 }
@@ -2985,7 +2773,7 @@ app.post('/api/change-avatar', async (req, res) => {
     if (!profileId) return res.status(400).json({ error: 'Profile ID is required' });
     if (!avatarImage) return res.status(400).json({ error: 'No avatar image provided' });
 
-    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
     if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
@@ -3051,7 +2839,7 @@ async function addFavoriteMusic(profile, searchTerm) {
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
     await injectProfileCookies(browser, profile);
     addingFavoriteMusicProfiles.add(profileId);
-    db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
+    await db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
 
     log(`Searching for music: "${searchTerm}"`);
 
@@ -3341,7 +3129,7 @@ async function addFavoriteMusic(profile, searchTerm) {
     } finally {
         addingFavoriteMusicProfiles.delete(profileId);
         await browser.close().catch(() => null);
-        db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
+        await db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
         log('Favorite music session ended, browser closed.');
     }
 }
@@ -3351,7 +3139,7 @@ app.post('/api/add-favorite-music', async (req, res) => {
     if (!profileId) return res.status(400).json({ error: 'Profile ID is required' });
     if (!searchTerm || !searchTerm.trim()) return res.status(400).json({ error: 'Search term is required' });
 
-    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
     if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
@@ -3376,7 +3164,7 @@ app.post('/api/add-favorite-music', async (req, res) => {
 
 
 async function runAllParallel(profilesToRun, limitUploads = false, uploadLimitCount = 0) {
-    const maxConcurrency = Number(getConfig('maxConcurrency', 2));
+    const maxConcurrency = Number(await getConfig('maxConcurrency', 2));
     const queue = [...profilesToRun];
     const active = [];
 
@@ -3569,10 +3357,10 @@ async function runSingleProfile(profile, limitUploads = false, uploadLimitCount 
     runningProfiles.add(profile.id);
 
     console.log(`[${profile.name}] Starting automation...`);
-    db.prepare('UPDATE profiles SET status = ?, last_run = ? WHERE id = ?').run('uploading', new Date().toISOString(), profile.id);
+    await db.prepare('UPDATE profiles SET status = ?, last_run = ? WHERE id = ?').run('uploading', new Date().toISOString(), profile.id);
 
     try {
-        const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+        const videoFolder = profile.video_folder || await getConfig('videoFolder', UPLOADS_DIR);
         let videos = [];
         try {
             if (specificFile) {
@@ -3586,7 +3374,7 @@ async function runSingleProfile(profile, limitUploads = false, uploadLimitCount 
             } else {
                 if (!fs.existsSync(videoFolder)) {
                     console.error(`[${profile.name}] Video folder does not exist: ${videoFolder}`);
-                    db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
+                    await db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
                     return;
                 }
                 videos = fs.readdirSync(videoFolder).filter(file => {
@@ -3606,20 +3394,20 @@ async function runSingleProfile(profile, limitUploads = false, uploadLimitCount 
         const uploadedCount = await uploadVideo(profile, actualFolder, videos, limitUploads, uploadLimitCount, forceUploadAll);
 
         if (uploadedCount > 0) {
-            db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('success', profile.id);
+            await db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('success', profile.id);
         } else if (videos.length === 0) {
-            db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('idle', profile.id);
+            await db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('idle', profile.id);
         } else {
-            db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('no_videos', profile.id);
+            await db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('no_videos', profile.id);
         }
     } catch (error) {
         console.error(`[${profile.name}] Automation error:`, error);
-        db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
+        await db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
     } finally {
         runningProfiles.delete(profile.id);
-        setTimeout(() => {
+        setTimeout(async () => {
             if (!runningProfiles.has(profile.id)) {
-                db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('idle', profile.id);
+                await db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('idle', profile.id);
             }
         }, 30000);
     }
@@ -4777,7 +4565,7 @@ app.post('/api/engage', async (req, res) => {
     const { profileId } = req.body;
     if (!profileId) return res.status(400).json({ error: 'profileId is required' });
 
-    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
     if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
@@ -4829,7 +4617,7 @@ app.post('/api/login-tiktok', async (req, res) => {
     const { profileId } = req.body;
     if (!profileId) return res.status(400).json({ error: 'profileId is required' });
 
-    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
+    const profile = await db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
     if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
@@ -4868,7 +4656,7 @@ app.post('/api/login-tiktok/stop', async (req, res) => {
 });
 
 // GET /api/login-tiktok/status/:profileId — Get login session status
-app.get('/api/login-tiktok/status/:profileId', (req, res) => {
+app.get('/api/login-tiktok/status/:profileId', async (req, res) => {
     const profileId = req.params.profileId;
     const session = loggingInProfiles.get(profileId);
     res.json({
@@ -4907,7 +4695,7 @@ async function runEngageSession(profile) {
 
     const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
     engagingProfiles.set(profileId, session);
-    db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('engaging', profileId);
+    await db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('engaging', profileId);
 
     log('Engage session started');
 
@@ -5016,7 +4804,7 @@ async function runEngageSession(profile) {
     } finally {
         engagingProfiles.delete(profileId);
         await browser.close().catch(() => null);
-        db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
+        await db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
         log('Engage session ended, browser closed.');
     }
 }
@@ -5667,14 +5455,14 @@ async function runTikTokLogin(profile) {
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
 
-    const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+    const browser = await launchBrowser(userDataDir, browserOptions);
     const session = {
         browser,
         stop: false,
         stats: { step: 'initializing', startedAt: Date.now() }
     };
     loggingInProfiles.set(profileId, session);
-    db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('logging_in', profileId);
+    await db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('logging_in', profileId);
 
     log('Login session started');
 
@@ -5727,7 +5515,7 @@ async function runTikTokLogin(profile) {
                         session.stats.step = 'cookie_login_complete';
                         // Refresh cookies from browser for future use
                         const freshCookies = await browser.cookies();
-                        db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?')
+                        await db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?')
                             .run(JSON.stringify(freshCookies), profileId);
                         return;
                     }
@@ -6251,7 +6039,7 @@ async function runTikTokLogin(profile) {
             try {
                 const cookies = await browser.cookies();
                 if (cookies && cookies.length > 0) {
-                    db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?')
+                    await db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?')
                         .run(JSON.stringify(cookies), profileId);
                     log(`Saved ${cookies.length} cookies to profile`);
                 }
@@ -6263,7 +6051,7 @@ async function runTikTokLogin(profile) {
         }
         loggingInProfiles.delete(profileId);
         await browser.close().catch(() => null);
-        db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
+        await db.prepare("UPDATE profiles SET status = 'idle' WHERE id = ?").run(profileId);
         log('Login session ended, browser closed.');
     }
 }
@@ -6378,13 +6166,13 @@ const dismissPopups = async (page) => {
 
 
 // Background Scheduler
-function checkAndRunSchedules() {
+async function checkAndRunSchedules() {
     const now = new Date();
     const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
     try {
         // Find all profiles that have a schedule matching the current time
-        const scheduledProfiles = db.prepare(`
+        const scheduledProfiles = await db.prepare(`
             SELECT DISTINCT p.* 
             FROM profiles p
             JOIN profile_schedules ps ON p.id = ps.profile_id

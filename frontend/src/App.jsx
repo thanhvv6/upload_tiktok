@@ -25,6 +25,9 @@ import {
   Users,
   Music,
   Search,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Heart,
   StopCircle,
   Upload,
@@ -34,9 +37,7 @@ import {
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
-import EditProfileModal from './components/EditProfileModal';
-
-const ProfileCard = ({
+const ProfileCard = React.memo(React.forwardRef(({
   profile,
   isSelected,
   onToggleSelected,
@@ -49,322 +50,309 @@ const ProfileCard = ({
   onLoginTikTok,
   onStopLoginTikTok,
   isLoggingIn,
-  onUpdateName,
   onChangeAvatar,
   isChangingAvatar,
-  selectedAvatarPath,
   onAddFavoriteMusic,
   isAddingFavoriteMusic,
-  musicSearchTerm,
   getStatusColor,
   editingId,
   setEditingId,
   editingValue,
   setEditingValue,
-  onEdit
-}) => {
+  onUpdateName,
+  onEdit,
+  groups
+}, ref) => {
   return (
     <motion.div
-      layout
+      ref={ref}
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
       className="glass card"
-      style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}
+      style={{ display: 'flex', flexDirection: 'column' }}
     >
-      {/* Header - click to open edit modal */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          cursor: 'pointer',
-          padding: '4px',
-          borderRadius: '8px'
-        }}
-        onClick={() => onEdit(profile.id)}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <label
-            style={{ display: 'flex', alignItems: 'center', cursor: 'pointer', flexShrink: 0 }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <input
-              type="checkbox"
-              checked={isSelected}
-              onChange={() => onToggleSelected(profile.id)}
-              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
-            />
-          </label>
-          <div style={{
-            background: 'rgba(56, 189, 248, 0.1)',
-            width: '44px',
-            height: '44px',
-            borderRadius: '12px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flexShrink: 0
-          }}>
-            <Globe size={24} color="var(--accent)" />
-          </div>
-          <div style={{ minWidth: 0 }}>
-            {editingId === profile.id ? (
-              <div
-                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <input
-                  autoFocus
-                  className="input"
-                  style={{ fontSize: '0.9rem', padding: '4px 8px', width: '140px' }}
-                  value={editingValue}
-                  onChange={(e) => setEditingValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') onUpdateName(profile.id, editingValue);
-                    if (e.key === 'Escape') setEditingId(null);
-                  }}
-                />
-                <button
-                  onClick={() => onUpdateName(profile.id, editingValue)}
-                  style={{ background: 'none', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: '4px' }}
-                >
-                  <Check size={16} />
-                </button>
-                <button
-                  onClick={() => setEditingId(null)}
-                  style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '4px' }}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <h3 style={{ fontSize: '1.1rem', fontWeight: '700', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '160px' }}>
-                  {profile.name}
-                </h3>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setEditingId(profile.id);
-                    setEditingValue(profile.name);
-                  }}
-                  style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', opacity: 0.5, transition: 'opacity 0.2s' }}
-                >
-                  <Edit3 size={14} />
-                </button>
-              </div>
-            )}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              <Clock size={12} />
-              {profile.last_run ? new Date(profile.last_run).toLocaleDateString() : 'Never run'}
-              <div style={{
-                width: '6px',
-                height: '6px',
-                borderRadius: '50%',
-                backgroundColor: getStatusColor(profile.status),
-                marginLeft: '6px'
-              }} />
+      {/* Header */}
+      <div>
+        {/* Row 1: controls */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={isSelected}
+                onChange={() => onToggleSelected(profile.id)}
+                style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+              />
+            </label>
+            <div style={{
+              background: 'rgba(56, 189, 248, 0.1)',
+              width: '36px',
+              height: '36px',
+              borderRadius: '10px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+              <Globe size={20} color="var(--accent)" />
             </div>
           </div>
+
+          <button
+            onClick={() => onEdit(profile.id)}
+            title="Edit settings"
+            style={{
+              background: 'rgba(255, 255, 255, 0.04)',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              color: 'var(--text-muted)',
+              cursor: 'pointer',
+              padding: '5px 10px',
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              fontSize: '0.72rem',
+              fontWeight: '600'
+            }}
+          >
+            <Settings size={13} /> Edit
+          </button>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete(profile.id);
-            }}
-            style={{ background: 'none', border: 'none', color: 'rgba(239, 68, 68, 0.4)', cursor: 'pointer', padding: '8px' }}
-          >
-            <Trash2 size={18} />
-          </button>
+        {/* Row 2: name + meta */}
+        <div style={{
+          marginTop: '10px',
+          background: 'rgba(255, 255, 255, 0.02)',
+          borderRadius: '10px',
+          padding: '10px 14px',
+          border: '1px solid var(--border)'
+        }}>
+          {editingId === profile.id ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                autoFocus
+                className="input"
+                style={{ fontSize: '0.9rem', padding: '4px 8px', width: '140px' }}
+                value={editingValue}
+                onChange={(e) => setEditingValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') onUpdateName(profile.id, editingValue);
+                  if (e.key === 'Escape') setEditingId(null);
+                }}
+              />
+              <button onClick={() => onUpdateName(profile.id, editingValue)} style={{ background: 'none', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: '4px' }}><Check size={15} /></button>
+              <button onClick={() => setEditingId(null)} style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '4px' }}><X size={15} /></button>
+            </div>
+          ) : (
+            <h3 style={{ fontSize: '1rem', fontWeight: '700', wordBreak: 'break-word' }}>
+              {profile.name}
+            </h3>
+          )}
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginTop: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+              <Clock size={11} style={{ flexShrink: 0 }} />
+              <span>{profile.last_run ? new Date(profile.last_run).toLocaleDateString() : 'Never run'}</span>
+              <div style={{
+                width: '5px',
+                height: '5px',
+                borderRadius: '50%',
+                backgroundColor: getStatusColor(profile.status),
+                marginLeft: '4px',
+                flexShrink: 0
+              }} />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+              <button onClick={() => { setEditingId(profile.id); setEditingValue(profile.name); }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', opacity: 0.5, padding: '2px' }}><Edit3 size={13} /></button>
+              <button onClick={() => onDelete(profile.id)} style={{ background: 'none', border: 'none', color: 'rgba(239, 68, 68, 0.4)', cursor: 'pointer', padding: '2px' }}><Trash2 size={13} /></button>
+            </div>
+          </div>
+
+          {/* Group */}
+          <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid var(--border)' }}>
+            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: '600' }}>
+              {profile.group_id
+                ? (() => { const g = groups.find(gr => gr.id === profile.group_id); return g ? g.name : '—'; })()
+                : 'No group'}
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* Action buttons row - always visible */}
-      <div style={{
-        display: 'flex',
-        gap: '6px',
-        flexWrap: 'wrap',
-        padding: '8px 4px 4px',
-        justifyContent: 'flex-end'
-      }}>
-        <button
-          className="btn"
-          onClick={() => onOpen(profile.id)}
-          style={{
-            background: 'rgba(255, 255, 255, 0.05)',
-            color: 'white',
-            border: '1px solid var(--border)',
-            padding: '6px 12px',
-            borderRadius: '8px',
-            gap: '6px'
-          }}
-        >
-          <ExternalLink size={14} />
-          OPEN
-        </button>
-
-        <button
-          className="btn"
-          onClick={() => onStart(profile.id)}
-          disabled={profile.status === 'uploading' || isEngaging}
-          style={{
-            background: profile.status === 'uploading' ? 'transparent' : 'rgba(255, 255, 255, 0.05)',
-            color: profile.status === 'uploading' ? 'var(--accent)' : 'white',
-            border: '1px solid var(--border)',
-            padding: '6px 12px',
-            borderRadius: '8px',
-            gap: '6px'
-          }}
-        >
-          {profile.status === 'uploading' ? (
-            <RefreshCw size={14} className="animate-pulse" />
-          ) : (
-            <Play size={14} fill="white" />
-          )}
-          {profile.status === 'uploading' ? 'ACTIVE' : 'START'}
-        </button>
-
-        {/* Auto Engage Button */}
-        <button
-          className="btn"
-          onClick={() => isEngaging ? onStopEngage(profile.id) : onEngage(profile.id)}
-          disabled={profile.status === 'uploading'}
-          title={isEngaging ? 'Dừng Auto Engage' : 'Bắt đầu xem & tương tác TikTok tự động'}
-          style={{
-            background: isEngaging
-              ? 'rgba(239, 68, 68, 0.12)'
-              : 'rgba(236, 72, 153, 0.08)',
-            color: isEngaging ? '#EF4444' : '#EC4899',
-            border: `1px solid ${isEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.25)'}`,
-            padding: '6px 12px',
-            borderRadius: '8px',
-            gap: '6px',
+      {/* Action Buttons */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '16px', paddingTop: '14px', borderTop: '1px solid var(--border)' }}>
+        {/* Status */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
+          <div style={{
+            width: '8px',
+            height: '8px',
+            borderRadius: '50%',
+            backgroundColor: getStatusColor(profile.status)
+          }} />
+          <span style={{
+            fontSize: '0.75rem',
             fontWeight: '700',
-            transition: 'all 0.2s',
-            cursor: profile.status === 'uploading' ? 'not-allowed' : 'pointer'
-          }}
-        >
-          {isEngaging ? (
-            <>
-              <StopCircle size={14} className="animate-pulse" />
-              STOP
-            </>
-          ) : (
-            <>
-              <Heart size={14} />
-              ENGAGE
-            </>
-          )}
-        </button>
+            color: getStatusColor(profile.status),
+            textTransform: 'uppercase'
+          }}>
+            {profile.status}
+          </span>
+        </div>
 
-        {/* Login TikTok Button */}
-        <button
-          className="btn"
-          onClick={() => isLoggingIn ? onStopLoginTikTok(profile.id) : onLoginTikTok(profile.id)}
-          disabled={profile.status === 'uploading' || (!profile.cookies && !profile.email && !profile.pass)}
-          title={(!profile.cookies && !profile.email && !profile.pass) ? 'Profile chưa có cookies hoặc email/password. Import CSV trước.' : (isLoggingIn ? 'Dừng Login' : 'Login TikTok')}
-          style={{
-            background: isLoggingIn
-              ? 'rgba(239, 68, 68, 0.12)'
-              : 'rgba(16, 185, 129, 0.08)',
-            color: isLoggingIn ? '#EF4444' : '#10B981',
-            border: `1px solid ${isLoggingIn ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.25)'}`,
-            padding: '6px 12px',
-            borderRadius: '8px',
-            gap: '6px',
-            fontWeight: '700',
-            transition: 'all 0.2s',
-            cursor: (profile.status === 'uploading' || (!profile.cookies && !profile.email && !profile.pass)) ? 'not-allowed' : 'pointer'
-          }}
-        >
-          {isLoggingIn ? (
-            <>
-              <StopCircle size={14} className="animate-pulse" />
-              STOP
-            </>
-          ) : (
-            <>
-              <LogIn size={14} />
-              LOGIN
-            </>
-          )}
-        </button>
+        {/* Row 1: Open + Start */}
+        <div style={{ display: 'flex', gap: '6px', minWidth: 0 }}>
+          <button
+            className="btn"
+            onClick={() => onOpen(profile.id)}
+            style={{
+              display: 'flex',
+              flex: 1,
+              minWidth: 0,
+              background: 'rgba(255, 255, 255, 0.05)',
+              color: 'white',
+              border: '1px solid var(--border)',
+              padding: '7px 8px',
+              borderRadius: '8px',
+              gap: '4px',
+              justifyContent: 'center',
+              fontSize: '0.78rem'
+            }}
+          >
+            <ExternalLink size={13} />
+            OPEN
+          </button>
 
-        {/* Change Avatar Button */}
-        <button
-          className="btn"
-          onClick={() => onChangeAvatar(profile.id)}
-          disabled={profile.status === 'uploading' || !selectedAvatarPath || isChangingAvatar}
-          title={!selectedAvatarPath ? 'Select an avatar image first' : (isChangingAvatar ? 'Avatar change in progress...' : 'Change TikTok avatar')}
-          style={{
-            background: isChangingAvatar
-              ? 'rgba(59, 130, 246, 0.12)'
-              : 'rgba(59, 130, 246, 0.08)',
-            color: isChangingAvatar ? '#3B82F6' : '#60A5FA',
-            border: '1px solid rgba(59,130,246,0.25)',
-            padding: '6px 12px',
-            borderRadius: '8px',
-            gap: '6px',
-            fontWeight: '700',
-            transition: 'all 0.2s',
-            cursor: (profile.status === 'uploading' || !selectedAvatarPath) ? 'not-allowed' : 'pointer'
-          }}
-        >
-          {isChangingAvatar ? (
-            <RefreshCw size={14} className="animate-pulse" />
-          ) : (
-            <Camera size={14} />
-          )}
-          AVATAR
-        </button>
+          <button
+            className="btn"
+            onClick={() => onStart(profile.id)}
+            disabled={profile.status === 'uploading' || isEngaging}
+            style={{
+              display: 'flex',
+              flex: 1,
+              minWidth: 0,
+              background: profile.status === 'uploading' ? 'transparent' : 'rgba(255, 255, 255, 0.05)',
+              color: profile.status === 'uploading' ? 'var(--accent)' : 'white',
+              border: '1px solid var(--border)',
+              padding: '7px 8px',
+              borderRadius: '8px',
+              gap: '4px',
+              justifyContent: 'center',
+              fontSize: '0.78rem'
+            }}
+          >
+            {profile.status === 'uploading' ? (
+              <RefreshCw size={13} className="animate-pulse" />
+            ) : (
+              <Play size={13} fill="white" />
+            )}
+            {profile.status === 'uploading' ? 'ACTIVE' : 'START'}
+          </button>
+        </div>
 
-        {/* Add Favorite Music Button */}
-        <button
-          className="btn"
-          onClick={() => onAddFavoriteMusic(profile.id, musicSearchTerm || '')}
-          disabled={
-            profile.status === 'uploading' ||
-            !musicSearchTerm ||
-            !musicSearchTerm.trim() ||
-            isAddingFavoriteMusic
-          }
-          title={
-            !musicSearchTerm || !musicSearchTerm.trim()
-              ? 'Enter a search term first'
-              : isAddingFavoriteMusic
-              ? 'Adding favorite music...'
-              : 'Search and favorite a TikTok sound'
-          }
-          style={{
-            background: isAddingFavoriteMusic
-              ? 'rgba(168, 85, 247, 0.12)'
-              : 'rgba(168, 85, 247, 0.08)',
-            color: isAddingFavoriteMusic ? '#A855F7' : '#C084FC',
-            border: '1px solid rgba(168,85,247,0.25)',
-            padding: '6px 12px',
-            borderRadius: '8px',
-            gap: '6px',
-            fontWeight: '700',
-            transition: 'all 0.2s',
-            cursor: (profile.status === 'uploading' || !musicSearchTerm || !musicSearchTerm.trim())
-              ? 'not-allowed'
-              : 'pointer'
-          }}
-        >
-          {isAddingFavoriteMusic ? (
-            <RefreshCw size={14} className="animate-pulse" />
-          ) : (
-            <Music size={14} />
-          )}
-          FAVORITES
-        </button>
+        {/* Row 2: Engage | Login */}
+        <div style={{ display: 'flex', gap: '6px', minWidth: 0 }}>
+          <button
+            className="btn"
+            onClick={() => isEngaging ? onStopEngage(profile.id) : onEngage(profile.id)}
+            disabled={profile.status === 'uploading'}
+            style={{
+              display: 'flex',
+              flex: 1,
+              minWidth: 0,
+              background: isEngaging ? 'rgba(239, 68, 68, 0.12)' : 'rgba(236, 72, 153, 0.08)',
+              color: isEngaging ? '#EF4444' : '#EC4899',
+              border: `1px solid ${isEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.25)'}`,
+              padding: '7px 8px',
+              borderRadius: '8px',
+              gap: '4px',
+              fontWeight: '700',
+              justifyContent: 'center',
+              fontSize: '0.78rem'
+            }}
+          >
+            <Heart size={13} />
+            ENGAGE
+          </button>
+
+          <button
+            className="btn"
+            onClick={() => isLoggingIn ? onStopLoginTikTok(profile.id) : onLoginTikTok(profile.id)}
+            disabled={profile.status === 'uploading' || (!profile.email && !profile.pass)}
+            style={{
+              display: 'flex',
+              flex: 1,
+              minWidth: 0,
+              background: isLoggingIn ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.08)',
+              color: isLoggingIn ? '#EF4444' : '#10B981',
+              border: `1px solid ${isLoggingIn ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.25)'}`,
+              padding: '7px 8px',
+              borderRadius: '8px',
+              gap: '4px',
+              fontWeight: '700',
+              justifyContent: 'center',
+              fontSize: '0.78rem'
+            }}
+          >
+            <LogIn size={14} />
+            LOGIN
+          </button>
+        </div>
+
+        {/* Row 3: Avatar | Favorites */}
+        <div style={{ display: 'flex', gap: '6px', minWidth: 0 }}>
+          <button
+            className="btn"
+            onClick={() => onChangeAvatar(profile.id)}
+            disabled={profile.status === 'uploading' || isChangingAvatar}
+            style={{
+              display: 'flex',
+              flex: 1,
+              minWidth: 0,
+              background: isChangingAvatar ? 'rgba(59, 130, 246, 0.12)' : 'rgba(59, 130, 246, 0.08)',
+              color: isChangingAvatar ? '#3B82F6' : '#60A5FA',
+              border: '1px solid rgba(59,130,246,0.25)',
+              padding: '7px 8px',
+              borderRadius: '8px',
+              gap: '4px',
+              fontWeight: '700',
+              justifyContent: 'center',
+              fontSize: '0.78rem'
+            }}
+          >
+            <Camera size={13} />
+            AVATAR
+          </button>
+
+          <button
+            className="btn"
+            onClick={() => onAddFavoriteMusic(profile.id)}
+            disabled={profile.status === 'uploading' || isAddingFavoriteMusic}
+            style={{
+              display: 'flex',
+              flex: 1,
+              minWidth: 0,
+              background: isAddingFavoriteMusic ? 'rgba(168, 85, 247, 0.12)' : 'rgba(168, 85, 247, 0.08)',
+              color: isAddingFavoriteMusic ? '#A855F7' : '#C084FC',
+              border: '1px solid rgba(168,85,247,0.25)',
+              padding: '7px 8px',
+              borderRadius: '8px',
+              gap: '4px',
+              fontWeight: '700',
+              justifyContent: 'center',
+              fontSize: '0.78rem'
+            }}
+          >
+            <Music size={13} />
+            FAVORITES
+          </button>
+        </div>
+
       </div>
     </motion.div>
   );
-};
+}));
+ProfileCard.displayName = 'ProfileCard';
 
 const App = () => {
   const [profiles, setProfiles] = useState([]);
@@ -409,15 +397,13 @@ const App = () => {
   const [importFileName, setImportFileName] = useState('');
   const [importResults, setImportResults] = useState(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [importFolderPath, setImportFolderPath] = useState('');
   const [exportFolderPath, setExportFolderPath] = useState('');
   const [isExporting, setIsExporting] = useState(false);
   const [exportResults, setExportResults] = useState(null);
   const [editingProfileId, setEditingProfileId] = useState(null);
 
-  const editingProfile = editingProfileId
-    ? profiles.find(p => p.id === editingProfileId)
-    : null;
 
   const filteredProfiles = useMemo(() => {
     if (groupFilter === 'all') return profiles;
@@ -1313,9 +1299,10 @@ const App = () => {
     }
   };
 
-  const handleAddFavoriteMusic = async (profileId, searchTerm) => {
+  const handleAddFavoriteMusic = async (profileId) => {
+    const searchTerm = musicSearchTerms[profileId];
     if (!searchTerm || !searchTerm.trim()) {
-      setMessage({ type: 'error', text: 'Please enter a search term' });
+      setMessage({ type: 'error', text: 'Please enter a search term in Edit settings' });
       return;
     }
     try {
@@ -1355,6 +1342,12 @@ const App = () => {
     setEditingProfileId(null);
   };
 
+  const handleDoneEditProfile = () => {
+    setEditingProfileId(null);
+    setMessage({ type: 'success', text: 'Profile updated successfully' });
+    setTimeout(() => setMessage(null), 3000);
+  };
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'uploading': return 'var(--accent)';
@@ -1372,38 +1365,79 @@ const App = () => {
   return (
     <div className="container" style={{ padding: '40px 20px', maxWidth: '1400px', margin: '0 auto' }}>
       {/* Sidebar / Navigation */}
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: '40px' }}>
-        <aside style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
-              <div style={{
-                background: 'linear-gradient(135deg, var(--primary), var(--secondary))',
-                width: '40px',
-                height: '40px',
-                borderRadius: '12px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 4px 12px rgba(255, 63, 182, 0.3)'
-              }}>
-                <Zap fill="white" size={20} color="white" />
-              </div>
-              <h1 style={{ fontSize: '1.75rem', fontWeight: '800', letterSpacing: '-0.02em' }}>
-                TikTok<span style={{ color: 'var(--primary)' }}>Manager</span>
-              </h1>
-            </div>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', paddingLeft: '4px' }}>Enterprise Automation</p>
-          </div>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: sidebarCollapsed ? '60px 1fr' : '280px 1fr',
+        gap: '40px',
+        transition: 'grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
+      }}>
+        <motion.aside
+          layout
+          style={{ display: 'flex', flexDirection: 'column', gap: '32px', overflow: 'hidden' }}
+        >
+          {/* Toggle button */}
+          <button
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            style={{
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid var(--border)',
+              borderRadius: '10px',
+              cursor: 'pointer',
+              padding: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-muted)',
+              alignSelf: sidebarCollapsed ? 'center' : 'flex-end',
+              transition: 'all 0.2s',
+              flexShrink: 0
+            }}
+            title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {sidebarCollapsed ? <ChevronRight size={20} /> : <ChevronLeft size={20} />}
+          </button>
 
-          <nav className="glass" style={{ padding: '12px', borderRadius: '20px' }}>
+          {/* Brand */}
+          {!sidebarCollapsed && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '8px' }}>
+                <div style={{
+                  background: 'linear-gradient(135deg, var(--primary), var(--secondary))',
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  boxShadow: '0 4px 12px rgba(255, 63, 182, 0.3)',
+                  flexShrink: 0
+                }}>
+                  <Zap fill="white" size={20} color="white" />
+                </div>
+                <h1 style={{ fontSize: '1.75rem', fontWeight: '800', letterSpacing: '-0.02em' }}>
+                  TikTok<span style={{ color: 'var(--primary)' }}>Manager</span>
+                </h1>
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', paddingLeft: '4px' }}>Enterprise Automation</p>
+            </motion.div>
+          )}
+
+          {/* Nav */}
+          <nav className="glass" style={{ padding: sidebarCollapsed ? '8px' : '12px', borderRadius: '20px', transition: 'padding 0.3s' }}>
             <button
               onClick={() => setActiveTab('profiles')}
+              title={sidebarCollapsed ? 'Profiles Management' : undefined}
               style={{
                 width: '100%',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '12px',
-                padding: '12px 16px',
+                justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+                gap: sidebarCollapsed ? '0' : '12px',
+                padding: sidebarCollapsed ? '10px 0' : '12px 16px',
                 borderRadius: '12px',
                 background: activeTab === 'profiles' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
                 color: activeTab === 'profiles' ? 'var(--primary)' : 'var(--text-muted)',
@@ -1413,16 +1447,18 @@ const App = () => {
                 transition: 'all 0.2s'
               }}
             >
-              <Layout size={20} /> Profiles Management
+              <Layout size={20} /> {!sidebarCollapsed && 'Profiles Management'}
             </button>
             <button
               onClick={() => setActiveTab('groups')}
+              title={sidebarCollapsed ? 'Groups' : undefined}
               style={{
                 width: '100%',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '12px',
-                padding: '12px 16px',
+                justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+                gap: sidebarCollapsed ? '0' : '12px',
+                padding: sidebarCollapsed ? '10px 0' : '12px 16px',
                 borderRadius: '12px',
                 background: activeTab === 'groups' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
                 color: activeTab === 'groups' ? 'var(--primary)' : 'var(--text-muted)',
@@ -1433,16 +1469,18 @@ const App = () => {
                 transition: 'all 0.2s'
               }}
             >
-              <Users size={20} /> Groups
+              <Users size={20} /> {!sidebarCollapsed && 'Groups'}
             </button>
             <button
               onClick={() => setActiveTab('settings')}
+              title={sidebarCollapsed ? 'System Settings' : undefined}
               style={{
                 width: '100%',
                 display: 'flex',
                 alignItems: 'center',
-                gap: '12px',
-                padding: '12px 16px',
+                justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+                gap: sidebarCollapsed ? '0' : '12px',
+                padding: sidebarCollapsed ? '10px 0' : '12px 16px',
                 borderRadius: '12px',
                 background: activeTab === 'settings' ? 'rgba(255, 63, 182, 0.1)' : 'transparent',
                 color: activeTab === 'settings' ? 'var(--primary)' : 'var(--text-muted)',
@@ -1453,56 +1491,44 @@ const App = () => {
                 transition: 'all 0.2s'
               }}
             >
-              <Settings size={20} /> System Settings
+              <Settings size={20} /> {!sidebarCollapsed && 'System Settings'}
             </button>
           </nav>
 
-          <div className="glass" style={{ padding: '24px', borderRadius: '20px', marginTop: 'auto' }}>
-            <h4 style={{ fontSize: '0.9rem', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <ShieldCheck size={16} color="var(--success)" /> System Status
-            </h4>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                <span>Active Profiles</span>
-                <span style={{ color: 'white' }}>{profiles.length}</span>
+          {/* System Status - only when expanded */}
+          {!sidebarCollapsed && (
+            <motion.div
+              className="glass"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              style={{ padding: '24px', borderRadius: '20px', marginTop: 'auto' }}
+            >
+              <h4 style={{ fontSize: '0.9rem', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ShieldCheck size={16} color="var(--success)" /> System Status
+              </h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  <span>Active Profiles</span>
+                  <span style={{ color: 'white' }}>{profiles.length}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  <span>Concurrency</span>
+                  <span style={{ color: 'white' }}>{config.maxConcurrency}</span>
+                </div>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                <span>Concurrency</span>
-                <span style={{ color: 'white' }}>{config.maxConcurrency}</span>
-              </div>
-            </div>
-          </div>
-        </aside>
+            </motion.div>
+          )}
+        </motion.aside>
 
         {/* Main Content */}
         <main>
-          {message && (
-            <motion.div
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="glass"
-              style={{
-                padding: '16px 24px',
-                borderRadius: '16px',
-                background: message.type === 'error' ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)',
-                color: message.type === 'error' ? '#EF4444' : '#10B981',
-                border: `1px solid ${message.type === 'error' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)'}`,
-                marginBottom: '32px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                zIndex: 100
-              }}
-            >
-              {message.type === 'error' ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
-              <span style={{ fontWeight: '600' }}>{message.text}</span>
-            </motion.div>
-          )}
+          {/* Flash message is now rendered as fixed toast below */}
 
           {activeTab === 'profiles' ? (
             <section>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
-                <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '32px', flexWrap: 'wrap', gap: '16px' }}>
+                <div style={{ minWidth: 0 }}>
                   <h2 style={{ fontSize: '1.5rem', fontWeight: '700', marginBottom: '4px' }}>Profiles Dashboard</h2>
                   <p style={{ color: 'var(--text-muted)' }}>Manage and automate your TikTok accounts</p>
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginTop: '16px', alignItems: 'center' }}>
@@ -1522,25 +1548,25 @@ const App = () => {
                       </select>
                     </label>
                     {filteredProfiles.length > 0 && (
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
                         <input
                           type="checkbox"
                           checked={allFilteredSelected}
                           onChange={toggleSelectAllFiltered}
                           style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
                         />
-                        Chọn tất cả (danh sách đang hiển thị)
+                        Chọn tất cả
                       </label>
                     )}
                     {selectedForRun.size > 0 && (
-                      <span style={{ fontSize: '0.85rem', color: 'var(--accent)' }}>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--accent)', whiteSpace: 'nowrap' }}>
                         Đã chọn {selectedForRun.size} profile
                         {bulkRunMode === 'sequential' ? ' (chạy tuần tự)' : ' (chạy cùng lúc)'}
                       </span>
                     )}
                   </div>
                 </div>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexShrink: 1, flexWrap: 'wrap' }}>
                   <button
                     className="btn btn-secondary"
                     onClick={() => setIsCreateProfileModalOpen(true)}
@@ -1729,11 +1755,76 @@ const App = () => {
                       </button>
                     );
                   })()}
+
+                  {/* Clear Trash button */}
+                  <button
+                    className="btn"
+                    onClick={clearTrash}
+                    disabled={selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần dọn rác' : 'Xoá cache/thùng rác của các profile đã chọn để tiết kiệm dung lượng'}
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(239, 155, 68, 0.08)',
+                      color: '#F59E0B',
+                      border: '1px solid rgba(245, 158, 11, 0.25)',
+                      fontWeight: '700',
+                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
+                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    Clear Trash
+                  </button>
+
+                  {/* Xóa Profile button */}
+                  <button
+                    className="btn"
+                    onClick={deleteSelectedProfiles}
+                    disabled={selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần xóa' : 'Xoá các profile đã chọn và folder của chúng'}
+                    style={{
+                      gap: '10px',
+                      background: 'rgba(239, 68, 68, 0.08)',
+                      color: '#EF4444',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      fontWeight: '700',
+                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
+                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    Xóa Profile
+                  </button>
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px' }}>
-                <AnimatePresence mode="popLayout">
+              {/* Limit upload row */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', height: '38px', padding: '0 12px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                  <input
+                    type="checkbox"
+                    checked={limitUploads}
+                    onChange={(e) => setLimitUploads(e.target.checked)}
+                    style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'white' }}>Giới hạn upload</span>
+                </label>
+                {limitUploads && (
+                  <>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Số video</span>
+                    <input
+                      type="number"
+                      className="input"
+                      style={{ padding: '8px 10px', height: '38px', width: '64px' }}
+                      min="1"
+                      value={uploadLimitCount}
+                      onChange={(e) => setUploadLimitCount(parseInt(e.target.value) || 1)}
+                    />
+                  </>
+                )}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px', alignItems: 'start' }}>
                   {filteredProfiles.map((profile) => (
                     <ProfileCard
                       key={profile.id}
@@ -1752,19 +1843,19 @@ const App = () => {
                       onUpdateName={updateProfileName}
                       onChangeAvatar={handleChangeAvatar}
                       isChangingAvatar={changingAvatarProfiles.has(profile.id)}
-                      selectedAvatarPath={avatarSelections[profile.id] || ''}
                       onAddFavoriteMusic={handleAddFavoriteMusic}
                       isAddingFavoriteMusic={addingFavoriteMusicProfiles.has(profile.id)}
-                      musicSearchTerm={musicSearchTerms[profile.id] || ''}
+
                       getStatusColor={getStatusColor}
                       editingId={editingId}
                       setEditingId={setEditingId}
                       editingValue={editingValue}
                       setEditingValue={setEditingValue}
                       onEdit={handleEditProfile}
+                      groups={groups}
+
                     />
                   ))}
-                </AnimatePresence>
               </div>
 
               {profiles.length === 0 && (
@@ -1823,13 +1914,22 @@ const App = () => {
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: 12, scale: 0.98 }}
                       className="glass"
-                      style={{ width: '100%', maxWidth: '460px', padding: '24px', borderRadius: '20px' }}
+                      style={{
+                        width: '100%',
+                        maxWidth: '520px',
+                        maxHeight: '85vh',
+                        padding: '24px',
+                        borderRadius: '20px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflow: 'hidden'
+                      }}
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexShrink: 0 }}>
                         <div>
-                          <h3 style={{ fontSize: '1.2rem', fontWeight: '700' }}>Create Profile</h3>
-                          <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>Add a new TikTok profile and assign a group</p>
+                          <h3 style={{ fontSize: '1.15rem', fontWeight: '700' }}>Create Profile</h3>
+                          <p style={{ color: 'var(--text-muted)', marginTop: '2px', fontSize: '0.8rem' }}>Add a new TikTok profile and assign a group</p>
                         </div>
                         <button
                           type="button"
@@ -1848,12 +1948,14 @@ const App = () => {
                         </button>
                       </div>
 
-                      <div style={{ display: 'grid', gap: '16px' }}>
+                      <div className="modal-scroll" style={{ overflowY: 'auto', overflowX: 'hidden', flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'grid', gap: '12px', minWidth: 0 }}>
                         <div className="input-group">
-                          <label>Profile Name</label>
+                          <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Profile Name</label>
                           <input
                             autoFocus
                             className="input"
+                            style={{ padding: '8px 12px', fontSize: '0.85rem' }}
                             placeholder="Nhập tên profile"
                             value={newProfileName}
                             onChange={(e) => setNewProfileName(e.target.value)}
@@ -1866,9 +1968,10 @@ const App = () => {
                         </div>
 
                         <div className="input-group">
-                          <label>Group</label>
+                          <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Group</label>
                           <select
                             className="input"
+                            style={{ padding: '8px 12px', fontSize: '0.85rem' }}
                             value={newProfileGroupId}
                             onChange={(e) => setNewProfileGroupId(e.target.value)}
                             disabled={isCreatingProfile || isSelectingFolder}
@@ -1883,66 +1986,60 @@ const App = () => {
                         </div>
 
                         <div className="input-group">
-                          <label>Source Folder</label>
-                          <div style={{ display: 'flex', gap: '10px' }}>
+                          <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Source Folder</label>
+                          <div style={{ display: 'flex', gap: '8px' }}>
                             <input
                               className="input"
+                              style={{ flex: 1, padding: '8px 12px', fontSize: '0.85rem' }}
                               placeholder="/path/to/videos"
                               value={newProfileVideoFolder}
                               onChange={(e) => setNewProfileVideoFolder(e.target.value)}
                               disabled={isCreatingProfile || isSelectingFolder}
-                              style={{ flex: 1 }}
                             />
                             <button
                               type="button"
                               className="btn btn-secondary"
                               onClick={handleSelectFolderForCreateProfile}
                               disabled={isCreatingProfile || isSelectingFolder}
-                              style={{ padding: '0 15px' }}
+                              style={{ padding: '0 12px', fontSize: '0.8rem' }}
                             >
-                              <FolderOpen size={18} style={{ marginRight: '8px' }} />
+                              <FolderOpen size={16} style={{ marginRight: '6px' }} />
                               Browse
                             </button>
                           </div>
-                          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
-                            Optional. Leave empty to use the global Video Source Folder.
-                          </p>
                         </div>
 
                         <div className="input-group">
-                          <label>Channel IDs (comma separated)</label>
+                          <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Channel IDs (comma separated)</label>
                           <textarea
                             className="input"
-                            style={{ minHeight: '80px', resize: 'vertical', fontFamily: 'inherit' }}
+                            style={{ width: '100%', boxSizing: 'border-box', minHeight: '100px', resize: 'vertical', fontFamily: 'inherit', padding: '8px 12px', fontSize: '0.85rem' }}
                             placeholder="e.g. UC123, UC456"
                             value={newProfileChannelIds}
                             onChange={(e) => setNewProfileChannelIds(e.target.value)}
                             disabled={isCreatingProfile || isSelectingFolder}
-                            rows={3}
+                            rows={4}
                           />
-                          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '8px' }}>
-                            Optional. List of managed channel IDs, comma-separated.
-                          </p>
                         </div>
 
-                        <div className="input-group" style={{ marginBottom: '12px' }}>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                        <div className="input-group">
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
                             <input
                               type="checkbox"
                               checked={newProfileNeedsRender}
                               onChange={(e) => setNewProfileNeedsRender(e.target.checked)}
                               disabled={isCreatingProfile || isSelectingFolder}
-                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                              style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
                             />
                             <div style={{ display: 'flex', flexDirection: 'column' }}>
-                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Render video bypass</span>
-                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mặc định bật. Tắt đi nếu muốn giữ nguyên video gốc.</span>
+                              <span style={{ fontSize: '0.82rem', fontWeight: '700' }}>Render video bypass</span>
+                              <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Mặc định bật. Tắt đi nếu muốn giữ nguyên video gốc.</span>
                             </div>
                           </label>
                         </div>
 
-                        <div className="input-group" style={{ marginBottom: '12px' }}>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                        <div className="input-group">
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
                             <input
                               type="checkbox"
                               checked={newProfileRenderConcatVideo}
@@ -1964,17 +2061,17 @@ const App = () => {
                               checked={newProfileRemoveTitle}
                               onChange={(e) => setNewProfileRemoveTitle(e.target.checked)}
                               disabled={isCreatingProfile || isSelectingFolder}
-                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                              style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
                             />
                             <div style={{ display: 'flex', flexDirection: 'column' }}>
-                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Xóa tiêu đề khi upload</span>
-                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mặc định bật. Tắt đi nếu muốn giữ lại tiêu đề gốc làm caption.</span>
+                              <span style={{ fontSize: '0.82rem', fontWeight: '700' }}>Xóa tiêu đề khi upload</span>
+                              <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Mặc định bật. Tắt đi nếu muốn giữ lại tiêu đề gốc làm caption.</span>
                             </div>
                           </label>
                         </div>
 
-                        <div className="input-group" style={{ marginBottom: '24px' }}>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', padding: '10px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                        <div className="input-group">
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
                             <input
                               type="checkbox"
                               checked={newProfileRenderVideoLong}
@@ -1996,23 +2093,25 @@ const App = () => {
                               checked={newProfileNeedContentCheck}
                               onChange={(e) => setNewProfileNeedContentCheck(e.target.checked)}
                               disabled={isCreatingProfile || isSelectingFolder}
-                              style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer' }}
+                              style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
                             />
                             <div style={{ display: 'flex', flexDirection: 'column' }}>
-                              <span style={{ fontSize: '0.85rem', fontWeight: '700' }}>Kiểm tra nội dung (Content Check)</span>
-                              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Mặc định bật. Tắt đi nếu muốn bỏ qua Content Check Lite của TikTok khi upload.</span>
+                              <span style={{ fontSize: '0.82rem', fontWeight: '700' }}>Kiểm tra nội dung (Content Check)</span>
+                              <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Mặc định bật. Tắt đi nếu muốn bỏ qua Content Check Lite của TikTok khi upload.</span>
                             </div>
                           </label>
                         </div>
 
-                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '8px' }}>
-                          <button type="button" className="btn btn-secondary" onClick={() => closeCreateProfileModal()} disabled={isCreatingProfile || isSelectingFolder}>
-                            Cancel
-                          </button>
-                          <button className="btn btn-primary" onClick={addProfile} disabled={isCreatingProfile || isSelectingFolder || !newProfileName.trim()}>
-                            {isCreatingProfile ? 'Creating...' : 'Create'}
-                          </button>
-                        </div>
+                      </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+                        <button type="button" className="btn btn-secondary" onClick={() => closeCreateProfileModal()} disabled={isCreatingProfile || isSelectingFolder} style={{ padding: '8px 16px', fontSize: '0.85rem' }}>
+                          Cancel
+                        </button>
+                        <button className="btn btn-primary" onClick={addProfile} disabled={isCreatingProfile || isSelectingFolder || !newProfileName.trim()} style={{ padding: '8px 20px', fontSize: '0.85rem' }}>
+                          {isCreatingProfile ? 'Creating...' : 'Create'}
+                        </button>
                       </div>
                     </motion.div>
                   </motion.div>
@@ -2179,6 +2278,360 @@ const App = () => {
                   </motion.div>
                 )}
               </AnimatePresence>
+
+              {/* Profile Edit Modal */}
+              <AnimatePresence>
+                {editingProfileId && (() => {
+                  const p = profiles.find(pr => pr.id === editingProfileId);
+                  if (!p) return null;
+                  return (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(15, 23, 42, 0.7)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                        padding: '24px'
+                      }}
+                      onClick={handleCloseEditProfile}
+                    >
+                      <motion.div
+                        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 12, scale: 0.98 }}
+                        className="glass"
+                        style={{
+                          width: '100%',
+                          maxWidth: '520px',
+                          maxHeight: '85vh',
+                          padding: '24px',
+                          borderRadius: '20px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          overflow: 'hidden'
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexShrink: 0 }}>
+                          <div>
+                            <h3 style={{ fontSize: '1.15rem', fontWeight: '700' }}>{p.name}</h3>
+                            <p style={{ color: 'var(--text-muted)', marginTop: '2px', fontSize: '0.8rem' }}>Edit profile settings</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={handleCloseEditProfile}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--text-muted)',
+                              cursor: 'pointer'
+                            }}
+                            aria-label="Close edit modal"
+                          >
+                            <X size={18} />
+                          </button>
+                        </div>
+
+                        <div className="modal-scroll" style={{ overflowY: 'auto', overflowX: 'hidden', flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'grid', gap: '12px', minWidth: 0 }}>
+
+                          {/* Group */}
+                          <div className="input-group">
+                            <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Group</label>
+                            <select
+                              className="input"
+                              style={{ padding: '8px 12px', fontSize: '0.85rem', width: '100%' }}
+                              value={p.group_id || ''}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                updateProfileGroup(p.id, v === '' ? null : v);
+                              }}
+                            >
+                              <option value="">No group</option>
+                              {groups.map((g) => (
+                                <option key={g.id} value={g.id}>{g.name}</option>
+                              ))}
+                            </select>
+                          </div>
+
+                          {/* Upload Folder */}
+                          <div className="input-group">
+                            <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Upload Folder</label>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <input
+                                className="input"
+                                style={{ flex: 1, padding: '8px 12px', fontSize: '0.85rem' }}
+                                placeholder="Global Default"
+                                value={p.video_folder || ''}
+                                onChange={(e) => updateProfileFolder(p.id, e.target.value)}
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => handleSelectFolder(p.id)}
+                                style={{ padding: '0 12px', fontSize: '0.8rem' }}
+                              >
+                                <FolderOpen size={16} style={{ marginRight: '6px' }} />
+                                Browse
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Avatar Image */}
+                          <div className="input-group">
+                            <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Avatar Image</label>
+                            <div style={{ display: 'flex', gap: '8px' }}>
+                              <input
+                                className="input"
+                                style={{ flex: 1, padding: '8px 12px', fontSize: '0.85rem' }}
+                                placeholder="Select an image..."
+                                value={avatarSelections[p.id] || ''}
+                                readOnly
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-secondary"
+                                onClick={() => handleSelectAvatar(p.id)}
+                                style={{ padding: '0 12px', fontSize: '0.8rem' }}
+                              >
+                                <FolderOpen size={16} style={{ marginRight: '6px' }} />
+                                Browse
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Favorite Music */}
+                          <div className="input-group">
+                            <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Favorite Music (search)</label>
+                            <input
+                              className="input"
+                              style={{ padding: '8px 12px', fontSize: '0.85rem', width: '100%', boxSizing: 'border-box' }}
+                              placeholder="Search music to favorite..."
+                              value={musicSearchTerms[p.id] || ''}
+                              onChange={(e) => handleUpdateMusicSearchTerm(p.id, e.target.value)}
+                            />
+                          </div>
+
+                          {/* Proxy Server */}
+                          <div className="input-group">
+                            <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Proxy Server</label>
+                            <input
+                              className="input"
+                              style={{ padding: '8px 12px', fontSize: '0.85rem', width: '100%', boxSizing: 'border-box' }}
+                              placeholder="http://user:pass@host:port"
+                              value={p.proxy || ''}
+                              onChange={(e) => updateProfileProxy(p.id, e.target.value)}
+                            />
+                          </div>
+
+                          {/* Channel IDs */}
+                          <div className="input-group">
+                            <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Channel IDs (comma separated)</label>
+                            <textarea
+                              className="input"
+                              style={{ width: '100%', boxSizing: 'border-box', minHeight: '56px', resize: 'vertical', fontFamily: 'inherit', padding: '8px 12px', fontSize: '0.85rem' }}
+                              placeholder="e.g. UC123, UC456"
+                              value={p.channel_ids || ''}
+                              onChange={(e) => updateProfileChannelIds(p.id, e.target.value)}
+                              rows={2}
+                            />
+                          </div>
+
+                          {/* Schedule */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                              <input
+                                type="checkbox"
+                                checked={p.is_scheduled === 1}
+                                onChange={(e) => updateProfileSchedule(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ fontSize: '0.82rem', fontWeight: '700' }}>Schedule Public Video</span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Lên lịch công khai video</span>
+                              </div>
+                            </label>
+                            {p.is_scheduled === 1 && (
+                              <div style={{ marginTop: '8px', paddingLeft: '24px' }}>
+                                <label style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '4px', display: 'block' }}>Daily Times (HH:mm, HH:mm)</label>
+                                <input
+                                  className="input"
+                                  style={{ padding: '8px 12px', fontSize: '0.85rem', width: '100%', boxSizing: 'border-box' }}
+                                  placeholder="e.g. 08:00, 18:00, 22:00"
+                                  defaultValue={p.schedules?.join(', ') || ''}
+                                  onBlur={(e) => updateProfileSchedules(p.id, e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      updateProfileSchedules(p.id, e.target.value);
+                                      e.target.blur();
+                                    }
+                                  }}
+                                />
+                                <div style={{ marginTop: '8px' }}>
+                                  <label style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)', marginBottom: '4px', display: 'block' }}>Số lượng video mỗi lần</label>
+                                  <input
+                                    type="number"
+                                    className="input"
+                                    style={{ padding: '8px 12px', fontSize: '0.85rem', width: '100%', boxSizing: 'border-box' }}
+                                    min="1"
+                                    placeholder="Default: 1"
+                                    value={p.upload_count || 1}
+                                    onChange={(e) => updateProfileUploadCount(p.id, parseInt(e.target.value) || 1)}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Auto Increment Schedule */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                              <input
+                                type="checkbox"
+                                checked={p.auto_increment_schedule === 1}
+                                onChange={(e) => updateProfileAutoIncrementSchedule(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ fontSize: '0.82rem', fontWeight: '700' }}>Lên lịch nối tiếp</span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>V1: Public, V2: Mặc định, V3+: +{(p.schedule_interval || 5)} phút</span>
+                              </div>
+                            </label>
+                            {p.auto_increment_schedule === 1 && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '8px', paddingLeft: '24px' }}>
+                                <span style={{ fontSize: '0.75rem', fontWeight: '600', color: 'var(--text-muted)' }}>Khoảng cách:</span>
+                                {[5, 10, 15, 20].map((mins) => (
+                                  <label key={mins} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.75rem', cursor: 'pointer' }}>
+                                    <input
+                                      type="radio"
+                                      name={`schedule_interval_${p.id}`}
+                                      value={mins}
+                                      checked={(p.schedule_interval || 5) === mins}
+                                      onChange={() => updateProfileScheduleInterval(p.id, mins)}
+                                      style={{ accentColor: 'var(--primary)', cursor: 'pointer' }}
+                                    />
+                                    {mins} phút
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Render video bypass */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                              <input
+                                type="checkbox"
+                                checked={p.needs_render !== 0}
+                                onChange={(e) => updateProfileNeedsRender(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: '700' }}>
+                                  <Zap size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                                  Render video bypass
+                                </span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: xử lý lách bản quyền qua render.py. Tắt: giữ nguyên video gốc.</span>
+                              </div>
+                            </label>
+                          </div>
+
+                          {/* Render concat video */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                              <input
+                                type="checkbox"
+                                checked={p.render_concat_video !== 0 && p.render_concat_video !== undefined}
+                                onChange={(e) => updateProfileRenderConcatVideo(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: '700' }}>
+                                  <Link size={14} color="var(--primary)" style={{ flexShrink: 0 }} />
+                                  Render concat video
+                                </span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: nối video tải về với 1 video bất kỳ trong thư mục concat_videos.</span>
+                              </div>
+                            </label>
+                          </div>
+
+                          {/* Remove Title */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                              <input
+                                type="checkbox"
+                                checked={p.remove_title !== 0}
+                                onChange={(e) => updateProfileRemoveTitle(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: '700' }}>
+                                  <Trash2 size={14} color="var(--error)" style={{ flexShrink: 0 }} />
+                                  Xóa tiêu đề khi upload
+                                </span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: tự động xóa tiêu đề mặc định khi đăng. Tắt: giữ tiêu đề gốc.</span>
+                              </div>
+                            </label>
+                          </div>
+
+                          {/* Set Nhạc */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                              <input
+                                type="checkbox"
+                                checked={p.set_music === 1}
+                                onChange={(e) => updateProfileSetMusic(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: '700' }}>
+                                  <Music size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                                  Set nhạc khi upload
+                                </span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: mở Edit video, chọn nhạc từ Favorites rồi Save.</span>
+                              </div>
+                            </label>
+                          </div>
+
+                          {/* Content Check */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}>
+                              <input
+                                type="checkbox"
+                                checked={p.need_content_check !== 0}
+                                onChange={(e) => updateProfileNeedContentCheck(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: '700' }}>
+                                  <ShieldCheck size={14} color="var(--success)" style={{ flexShrink: 0 }} />
+                                  Kiểm tra nội dung (Content Check)
+                                </span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: tự động kiểm tra bản quyền / nội dung bằng Content Check Lite. Tắt: bỏ qua kiểm tra.</span>
+                              </div>
+                            </label>
+                          </div>
+
+                        </div>
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+                          <button type="button" className="btn btn-primary" onClick={handleDoneEditProfile} style={{ padding: '8px 20px', fontSize: '0.85rem' }}>
+                            Done
+                          </button>
+                        </div>
+                      </motion.div>
+                    </motion.div>
+                  );
+                })()}
+              </AnimatePresence>
+
 
               {/* Import Folder Modal */}
               <AnimatePresence>
@@ -2479,34 +2932,6 @@ const App = () => {
                 )}
               </AnimatePresence>
 
-              {/* Edit Profile Modal */}
-              <EditProfileModal
-                isOpen={editingProfileId !== null}
-                onClose={handleCloseEditProfile}
-                profile={editingProfile}
-                groups={groups}
-                getStatusColor={getStatusColor}
-                onUpdateGroup={updateProfileGroup}
-                onUpdateFolder={updateProfileFolder}
-                onSelectFolder={handleSelectFolder}
-                onUpdateProxy={updateProfileProxy}
-                onUpdateChannelIds={updateProfileChannelIds}
-                onUpdateSchedule={updateProfileSchedule}
-                onUpdateSchedules={updateProfileSchedules}
-                onUpdateSetMusic={updateProfileSetMusic}
-                onUpdateAutoIncrementSchedule={updateProfileAutoIncrementSchedule}
-                onUpdateScheduleInterval={updateProfileScheduleInterval}
-                onUpdateUploadCount={updateProfileUploadCount}
-                onUpdateNeedsRender={updateProfileNeedsRender}
-                onUpdateRenderConcatVideo={updateProfileRenderConcatVideo}
-                onUpdateRenderVideoLong={updateProfileRenderVideoLong}
-                onUpdateRemoveTitle={updateProfileRemoveTitle}
-                onUpdateNeedContentCheck={updateProfileNeedContentCheck}
-                onSelectAvatar={handleSelectAvatar}
-                selectedAvatarPath={editingProfileId ? (avatarSelections[editingProfileId] || '') : ''}
-                musicSearchTerm={editingProfileId ? (musicSearchTerms[editingProfileId] || '') : ''}
-                onUpdateMusicSearchTerm={handleUpdateMusicSearchTerm}
-              />
             </section>
           ) : activeTab === 'groups' ? (
             <section>
@@ -2640,15 +3065,38 @@ const App = () => {
                     <label style={{ display: 'block', marginBottom: '10px', fontSize: '0.95rem', fontWeight: '600' }}>
                       Video Source Folder
                     </label>
-                    <div style={{ position: 'relative' }}>
-                      <Video size={18} style={{ position: 'absolute', left: '14px', top: '14px', color: 'var(--text-muted)' }} />
+                    <div style={{ display: 'flex', gap: '10px' }}>
                       <input
                         className="input"
-                        style={{ paddingLeft: '44px', width: '100%' }}
+                        style={{ flex: 1 }}
                         value={config.videoFolder}
                         onChange={(e) => setConfig({ ...config, videoFolder: e.target.value })}
                         placeholder="/Users/path/to/videos"
                       />
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={async () => {
+                          setIsSelectingFolder(true);
+                          const selectedPath = await selectFolderPath();
+                          setIsSelectingFolder(false);
+                          if (selectedPath) {
+                            const newConfig = { ...config, videoFolder: selectedPath };
+                            setConfig(newConfig);
+                            try {
+                              await axios.post('/api/config', newConfig);
+                              setMessage({ type: 'success', text: 'Video folder updated' });
+                              setTimeout(() => setMessage(null), 3000);
+                            } catch (err) {
+                              setMessage({ type: 'error', text: 'Failed to save folder' });
+                            }
+                          }
+                        }}
+                        style={{ padding: '0 15px', whiteSpace: 'nowrap' }}
+                      >
+                        <FolderOpen size={18} style={{ marginRight: '8px' }} />
+                        Browse
+                      </button>
                     </div>
                     <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
                       Specify the absolute path where your .mp4 files are located.
@@ -2755,6 +3203,46 @@ const App = () => {
                 Please select a folder in the native dialog that appeared.
               </p>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Flash Toast Message */}
+      <AnimatePresence>
+        {message && (
+          <motion.div
+            initial={{ opacity: 0, x: 60 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 40 }}
+            transition={{ duration: 0.3, ease: 'easeOut' }}
+            className="glass"
+            style={{
+              position: 'fixed',
+              top: '20px',
+              right: '24px',
+              padding: '14px 24px',
+              borderRadius: '14px',
+              background: message.type === 'error'
+                ? 'rgba(239, 68, 68, 0.15)'
+                : 'rgba(16, 185, 129, 0.15)',
+              backdropFilter: 'blur(20px)',
+              color: message.type === 'error' ? '#EF4444' : '#10B981',
+              border: `1px solid ${message.type === 'error' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              zIndex: 2000,
+              boxShadow: message.type === 'error'
+                ? '0 8px 32px rgba(239, 68, 68, 0.15)'
+                : '0 8px 32px rgba(16, 185, 129, 0.15)',
+              maxWidth: '420px',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis'
+            }}
+          >
+            {message.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+            <span style={{ fontWeight: '600', fontSize: '0.9rem' }}>{message.text}</span>
           </motion.div>
         )}
       </AnimatePresence>
