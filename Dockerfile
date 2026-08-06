@@ -9,9 +9,8 @@ RUN npm run build
 # ---- Stage 2: Backend (Playwright + Node) ----
 FROM mcr.microsoft.com/playwright:v1.59.1-noble AS backend
 WORKDIR /app/backend
-COPY backend/package*.json ./
-RUN npm ci
 COPY backend/ ./
+RUN npm ci
 EXPOSE 3010
 CMD ["node", "server.js"]
 

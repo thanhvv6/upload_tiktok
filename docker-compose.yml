@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: tiktok
       POSTGRES_PASSWORD: tiktok
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - ./pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -45,5 +45,3 @@ services:
     depends_on:
       - app
 
-volumes:
-  pgdata:

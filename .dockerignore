@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+*.md
+.DS_Store
+data/
+profiles/
+uploads/
+dummy_videos/
+concat_videos/
+*.log
+.env

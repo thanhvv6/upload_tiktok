@@ -26,6 +26,7 @@ test('computeNextScheduledTime increments from previous scheduled slot by 5 minu
     const scheduled = computeNextScheduledTime({
         index: 4,
         lastScheduledTime: previous,
+        intervalMinutes: 5,
         now: new Date('2026-04-12T09:18:25.755Z')
     });
 
