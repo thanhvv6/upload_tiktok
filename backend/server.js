@@ -2870,12 +2870,8 @@ async function changeAvatar(profile, avatarImage) {
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
 
-<<<<<<< HEAD
-    const browser = await launchBrowser(userDataDir, browserOptions);
-=======
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
     await injectProfileCookies(browser, profile);
->>>>>>> origin/main
     avatarChangingProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('changing_avatar', profileId);
 
@@ -3077,12 +3073,8 @@ async function addFavoriteMusic(profile, searchTerm) {
         if (proxyConfig) browserOptions.proxy = proxyConfig;
     }
 
-<<<<<<< HEAD
-    const browser = await launchBrowser(userDataDir, browserOptions);
-=======
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
     await injectProfileCookies(browser, profile);
->>>>>>> origin/main
     addingFavoriteMusicProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
 
@@ -3878,12 +3870,8 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         }
     }
 
-<<<<<<< HEAD
-    const browser = await launchBrowser(userDataDir, browserOptions);
-=======
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
     await injectProfileCookies(browser, profile);
->>>>>>> origin/main
 
     const log = (msg) => {
         const entry = `[${new Date().toISOString()}] [${profile.name}] ${msg}\n`;
@@ -4939,12 +4927,8 @@ async function runEngageSession(profile) {
         }
     }
 
-<<<<<<< HEAD
-    const browser = await launchBrowser(userDataDir, browserOptions);
-=======
     const browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
     await injectProfileCookies(browser, profile);
->>>>>>> origin/main
 
     const session = { browser, stop: false, stats: { videosWatched: 0, likes: 0, comments: 0, channelVisits: 0 } };
     engagingProfiles.set(profileId, session);
