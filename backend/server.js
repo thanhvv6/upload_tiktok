@@ -1349,7 +1349,7 @@ app.post('/api/system/clear-debug', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video, avatar_image } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -1445,6 +1445,9 @@ app.patch('/api/profiles/:id', (req, res) => {
     if (render_concat_video !== undefined) {
         const val = render_concat_video ? 1 : 0;
         db.prepare('UPDATE profiles SET render_concat_video = ? WHERE id = ?').run(val, profileId);
+    }
+    if (avatar_image !== undefined) {
+        db.prepare('UPDATE profiles SET avatar_image = ? WHERE id = ?').run(avatar_image, profileId);
     }
     if (cookies !== undefined) {
         db.prepare('UPDATE profiles SET cookies = ? WHERE id = ?').run(cookies, profileId);
@@ -2940,57 +2943,88 @@ async function changeAvatar(profile, avatarImage) {
             return;
         }
 
-        // Step 3: Wait for the file input to be visible in the modal and upload
+        // Step 3: Upload avatar image via file input
+        // TikTok's file input is usually hidden; try visible first, then fall back to hidden
         let fileInput = null;
         try {
             fileInput = await page.waitForSelector('input[type="file"]', { timeout: 10000, state: 'visible' });
         } catch (e) {
-            log(`File input not found: ${e.message}`);
+            log(`Visible file input not found, trying hidden: ${e.message}`);
+        }
+        if (!fileInput) {
+            try {
+                fileInput = await page.waitForSelector('input[type="file"]', { timeout: 5000 });
+                if (fileInput) log('Found hidden file input');
+            } catch (e) {
+                log(`No file input at all: ${e.message}`);
+            }
         }
 
-        if (fileInput) {
-            await fileInput.setInputFiles(avatarImage);
-            log(`Uploaded avatar: ${avatarImage}`);
-            await page.waitForTimeout(4000);
-
-            // Step 4: Click Apply in crop/zoom modal (class ef1kawg9)
-            let applyBtn = null;
-            try {
-                applyBtn = await page.waitForSelector('button.ef1kawg9:has-text("Apply")', { timeout: 15000 });
-            } catch (e) {
-                log(`Apply button not found: ${e.message}`);
-            }
-            if (applyBtn) {
-                await applyBtn.click({ force: true });
-                log('Clicked Apply (crop modal)');
-                await page.waitForTimeout(3000);
-            } else {
-                // Fallback: try generic Apply
-                try {
-                    const btn = await page.$('button:has-text("Apply")');
-                    if (btn) {
-                        await btn.click({ force: true });
-                        log('Clicked Apply (fallback)');
-                        await page.waitForTimeout(3000);
-                    }
-                } catch (e) {}
-            }
-        } else {
+        if (!fileInput) {
+            log('ERROR: Cannot find file input to upload avatar');
             return;
         }
 
-        // Step 5: Click Save in edit profile modal
-        let saveBtn = null;
-        try {
-            saveBtn = await page.waitForSelector('button:has-text("Save")', { timeout: 10000 });
-        } catch (e) {
-            log(`Save button not found: ${e.message}`);
+        await fileInput.setInputFiles(avatarImage);
+        log(`Uploaded avatar: ${avatarImage}`);
+        await page.waitForTimeout(4000);
+
+        // Step 4: Handle crop/zoom modal if it appears
+        // TikTok may show a crop/zoom dialog with an "Apply" or "Confirm" button
+        const applySelectors = [
+            'button:has-text("Apply")',
+            'div:has-text("Apply")',
+            'span:has-text("Apply")',
+            '[role="button"]:has-text("Apply")',
+        ];
+        let applyClicked = false;
+        for (const sel of applySelectors) {
+            try {
+                const btn = await page.waitForSelector(sel, { timeout: 5000 });
+                if (btn) {
+                    const isVisible = await btn.isVisible();
+                    if (isVisible) {
+                        await btn.click({ force: true });
+                        log(`Clicked Apply via selector: ${sel}`);
+                        applyClicked = true;
+                        await page.waitForTimeout(3000);
+                        break;
+                    }
+                }
+            } catch (e) {
+                // Try next selector
+            }
+        }
+        if (!applyClicked) {
+            log('No crop/Apply modal appeared, proceeding to Save');
         }
 
-        if (saveBtn) {
-            await saveBtn.click({ force: true });
-            log('Clicked Save');
-            await page.waitForTimeout(4000);
+        // Step 5: Click Save in edit profile modal
+        const saveSelectors = [
+            'button:has-text("Save")',
+            '[role="button"]:has-text("Save")',
+            'div[role="dialog"] button:has-text("Save")',
+        ];
+        let saveClicked = false;
+        for (const sel of saveSelectors) {
+            try {
+                const btn = await page.waitForSelector(sel, { timeout: 8000 });
+                if (btn) {
+                    const isVisible = await btn.isVisible();
+                    if (isVisible) {
+                        await btn.click({ force: true });
+                        log(`Clicked Save via selector: ${sel}`);
+                        saveClicked = true;
+                        await page.waitForTimeout(4000);
+                        break;
+                    }
+                }
+            } catch (e) {
+                // Try next selector
+            }
+        }
+        if (!saveClicked) {
+            log('WARNING: Save button not found or not clickable');
         }
 
         log('Avatar change flow completed');
@@ -3627,7 +3661,12 @@ async function runSingleProfile(profile, limitUploads = false, uploadLimitCount 
         // Determine the actual folder to use (specificFile may be in a different folder)
         const actualFolder = specificFile ? path.dirname(specificFile) : videoFolder;
 
-        // Always open browser to allow login/session management
+        if (videos.length === 0) {
+            console.log(`[${profile.name}] No videos found in ${actualFolder}. Skipping browser launch.`);
+            db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('idle', profile.id);
+            return;
+        }
+
         const uploadedCount = await uploadVideo(profile, actualFolder, videos, limitUploads, uploadLimitCount, forceUploadAll);
 
         if (uploadedCount > 0) {

@@ -1260,6 +1260,8 @@ const App = () => {
       const selectedPath = await selectAvatarPath();
       if (selectedPath) {
         setAvatarSelections(prev => ({ ...prev, [id]: selectedPath }));
+        await axios.patch(`/api/profiles/${id}`, { avatar_image: selectedPath });
+        setProfiles(prev => prev.map(p => p.id === id ? { ...p, avatar_image: selectedPath } : p));
       }
     } finally {
       setIsSelectingFolder(false);
@@ -1279,7 +1281,8 @@ const App = () => {
   };
 
   const handleChangeAvatar = async (profileId) => {
-    const avatarImage = avatarSelections[profileId];
+    const profile = profiles.find(p => p.id === profileId);
+    const avatarImage = avatarSelections[profileId] || profile?.avatar_image;
     if (!avatarImage) {
       setMessage({ type: 'error', text: 'Please select an avatar image first' });
       return;
@@ -1756,45 +1759,6 @@ const App = () => {
                     );
                   })()}
 
-                  {/* Clear Trash button */}
-                  <button
-                    className="btn"
-                    onClick={clearTrash}
-                    disabled={selectedForRun.size === 0}
-                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần dọn rác' : 'Xoá cache/thùng rác của các profile đã chọn để tiết kiệm dung lượng'}
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(239, 155, 68, 0.08)',
-                      color: '#F59E0B',
-                      border: '1px solid rgba(245, 158, 11, 0.25)',
-                      fontWeight: '700',
-                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
-                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    <Trash2 size={18} />
-                    Clear Trash
-                  </button>
-
-                  {/* Xóa Profile button */}
-                  <button
-                    className="btn"
-                    onClick={deleteSelectedProfiles}
-                    disabled={selectedForRun.size === 0}
-                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần xóa' : 'Xoá các profile đã chọn và folder của chúng'}
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(239, 68, 68, 0.08)',
-                      color: '#EF4444',
-                      border: '1px solid rgba(239, 68, 68, 0.25)',
-                      fontWeight: '700',
-                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
-                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
-                    }}
-                  >
-                    <Trash2 size={18} />
-                    Xóa Profile
-                  </button>
                 </div>
               </div>
 
@@ -2391,7 +2355,7 @@ const App = () => {
                                 className="input"
                                 style={{ flex: 1, padding: '8px 12px', fontSize: '0.85rem' }}
                                 placeholder="Select an image..."
-                                value={avatarSelections[p.id] || ''}
+                                value={avatarSelections[p.id] || p.avatar_image || ''}
                                 readOnly
                               />
                               <button
