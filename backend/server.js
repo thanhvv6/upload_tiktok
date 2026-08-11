@@ -4541,7 +4541,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             // --- END TASK: Content Check Lite ---
 
             // --- TASK 3: Scheduled Publishing ---
-            if (!limitUploads && profile.auto_increment_schedule) {
+            if (!(limitUploads && uploadLimitCount === 1) && profile.auto_increment_schedule) {
                 try {
                     log(`Auto-increment schedule: processing video ${i + 1}...`);
                     if (i === 0) {
@@ -4590,7 +4590,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 } catch (e) {
                     log(`Auto-increment scheduling failed: ${e.message}`);
                 }
-            } else if (!limitUploads && profile.is_scheduled && i >= 3) {
+            } else if (!(limitUploads && uploadLimitCount === 1) && profile.is_scheduled && i >= 3) {
                 try {
                     log(`Task 3: Scheduling video ${i + 1}...`);
 

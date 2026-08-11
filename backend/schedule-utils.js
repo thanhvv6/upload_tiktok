@@ -2,7 +2,7 @@ const pad = (value) => String(value).padStart(2, '0');
 
 export function computeNextScheduledTime({ index, lastScheduledTime, intervalMinutes = 10, now = new Date() }) {
     if (index < 3) return null;
-    const stepMin = Number(intervalMinutes) === 5 ? 5 : 10;
+    const stepMin = Number(intervalMinutes) || 10;
     const stepMs = stepMin * 60 * 1000;
     const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
 
@@ -14,7 +14,7 @@ export function computeNextScheduledTime({ index, lastScheduledTime, intervalMin
 }
 
 export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 5, now = new Date() }) {
-    const stepMin = Number(intervalMinutes) === 10 ? 10 : 5;
+    const stepMin = Number(intervalMinutes) || 5;
     const stepMs = stepMin * 60 * 1000;
     const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
 

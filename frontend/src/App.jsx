@@ -1663,43 +1663,6 @@ const App = () => {
                     <Trash2 size={18} />
                     Xóa Profile
                   </button>
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Giới hạn upload
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', height: '40px', padding: '0 12px', borderRadius: '12px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)', userSelect: 'none' }}>
-                      <input
-                        type="checkbox"
-                        checked={limitUploads}
-                        onChange={(e) => setLimitUploads(e.target.checked)}
-                        style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: 'pointer' }}
-                      />
-                      <span style={{ fontSize: '0.8rem', fontWeight: '600', color: 'white' }}>Bật</span>
-                    </label>
-                  </label>
-                  {limitUploads && (
-                    <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '80px' }}>
-                      Số video
-                      <input
-                        type="number"
-                        className="input"
-                        style={{ padding: '10px 12px', height: '40px' }}
-                        min="1"
-                        value={uploadLimitCount}
-                        onChange={(e) => setUploadLimitCount(parseInt(e.target.value) || 1)}
-                      />
-                    </label>
-                  )}
-                  <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem', color: 'var(--text-muted)', minWidth: '140px' }}>
-                    Kiểu chạy
-                    <select
-                      className="input"
-                      value={bulkRunMode}
-                      onChange={(e) => setBulkRunMode(e.target.value === 'sequential' ? 'sequential' : 'parallel')}
-                      style={{ padding: '10px 12px', cursor: 'pointer' }}
-                    >
-                      <option value="parallel">Chạy cùng lúc</option>
-                      <option value="sequential">Chạy tuần tự</option>
-                    </select>
-                  </label>
                   <button
                     className="btn btn-primary"
                     onClick={() => startAutomation()}
@@ -1786,6 +1749,16 @@ const App = () => {
                     />
                   </>
                 )}
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Kiểu chạy</span>
+                <select
+                  className="input"
+                  value={bulkRunMode}
+                  onChange={(e) => setBulkRunMode(e.target.value === 'sequential' ? 'sequential' : 'parallel')}
+                  style={{ padding: '8px 10px', height: '38px', cursor: 'pointer' }}
+                >
+                  <option value="parallel">Cùng lúc</option>
+                  <option value="sequential">Tuần tự</option>
+                </select>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '24px', alignItems: 'start' }}>
