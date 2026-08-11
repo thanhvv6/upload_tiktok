@@ -6503,7 +6503,17 @@ app.post('/api/stats/start', async (req, res) => {
   // Run in background — 2 profiles at a time
   (async () => {
     const BATCH = 2;
-    const ctx = { PROFILES_DIR, pushEvent, appendResult, markProfileDone, markError, isAborted };
+    const ctx = {
+      PROFILES_DIR,
+      pushEvent,
+      appendResult,
+      markProfileDone,
+      markError,
+      isAborted,
+      applyProfileFingerprint,
+      injectProfileCookies,
+      parseProxy
+    };
     for (let i = 0; i < profiles.length; i += BATCH) {
       if (isAborted(jobId)) break;
       const batch = profiles.slice(i, i + BATCH);
@@ -6533,7 +6543,23 @@ app.get('/api/stats/stream/:jobId', (req, res) => {
   }
 
   addClient(jobId, res);
-  req.on('close', () => removeClient(jobId, res));
+
+  // Heartbeat every 20s to keep SSE connection alive through proxies/timeouts
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { clearInterval(heartbeat); }
+  }, 20000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    removeClient(jobId, res);
+  });
+});
+
+// GET /api/stats/status/:jobId — simple status check for polling fallback
+app.get('/api/stats/status/:jobId', (req, res) => {
+  const job = getJob(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json({ status: job.status, resultCount: [...job.results.values()].reduce((s, v) => s + v.length, 0) });
 });
 
 // GET /api/stats/download/:jobId

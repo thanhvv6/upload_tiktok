@@ -75,8 +75,19 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
     };
 
     es.onerror = () => {
-      setError('Mất kết nối SSE');
       es.close();
+      // SSE dropped — poll status endpoint as fallback
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch(`/api/stats/status/${jid}`);
+          if (!r.ok) { clearInterval(poll); setIsDone(true); return; } // job gone, allow download
+          const data = await r.json();
+          if (data.status === 'done' || data.status === 'cancelled') {
+            clearInterval(poll);
+            setIsDone(true);
+          }
+        } catch { clearInterval(poll); }
+      }, 3000);
     };
   }
 
@@ -88,14 +99,39 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
     onClose();
   };
 
-  const handleDownload = () => {
-    const date = new Date().toISOString().split('T')[0];
-    const a = document.createElement('a');
-    a.href = `/api/stats/download/${jobId}`;
-    a.download = `tiktok_stats_${date}.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  const handleDownload = async () => {
+    if (!jobId || isDownloading) return;
+    try {
+      setIsDownloading(true);
+      setError(null);
+      const res = await fetch(`/api/stats/download/${jobId}`);
+      if (!res.ok) {
+        let errMsg = 'Không thể tải file Excel';
+        try {
+          const errData = await res.json();
+          if (errData?.error) errMsg = errData.error;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const date = new Date().toISOString().split('T')[0];
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tiktok_stats_${date}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      }, 1000);
+    } catch (err) {
+      setError(err.message || 'Lỗi khi tải file Excel');
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   if (!isOpen) return null;
@@ -210,10 +246,10 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
           <button
             className="btn btn-primary"
             onClick={handleDownload}
-            disabled={!isDone || !jobId}
+            disabled={(!isDone && logCount === 0) || !jobId || isDownloading}
           >
             <Download size={14} />
-            Download Excel
+            {isDownloading ? 'Đang tải file...' : 'Download Excel'}
           </button>
         </div>
       </div>

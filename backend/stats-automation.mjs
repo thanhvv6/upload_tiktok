@@ -7,59 +7,109 @@ const RESTRICTION_TEXT = 'Your video is not eligible for recommendation in the F
 const ROW_SEL = '[data-tt="components_PostTable_Absolute"]';
 
 export async function runStatsForProfile(profile, jobId, ctx) {
-  const { PROFILES_DIR, pushEvent, appendResult, markProfileDone, markError, isAborted } = ctx;
+  const {
+    PROFILES_DIR,
+    pushEvent,
+    appendResult,
+    markProfileDone,
+    markError,
+    isAborted,
+    applyProfileFingerprint,
+    injectProfileCookies,
+    parseProxy
+  } = ctx;
   const userDataDir = path.join(PROFILES_DIR, profile.name);
   let browser = null;
   const log = (msg) => console.log(`[${profile.name}][STATS] ${msg}`);
 
   try {
-    browser = await chromium.launchPersistentContext(userDataDir, {
+    const browserOptions = {
       headless: false,
       args: ['--disable-blink-features=AutomationControlled', '--window-size=1440,900'],
       viewport: { width: 1440, height: 900 },
-    });
-    const page = await browser.newPage();
+    };
+    // Stats automation does NOT use proxy — direct connection for stability
+
+    browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
+
+    if (typeof applyProfileFingerprint === 'function') {
+      await applyProfileFingerprint(browser, profile);
+    }
+    if (typeof injectProfileCookies === 'function') {
+      await injectProfileCookies(browser, profile);
+    }
+
+    const page = browser.pages()[0] || await browser.newPage();
 
     log('Opening TikTok Studio content page');
     await page.goto(CONTENT_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(4000);
 
-    // Get total from "Posts 153" badge — instant, no scrolling needed
-    const totalVideos = await page.evaluate(() => {
-      const m = document.body.innerText.match(/Posts\s+([\d,]+)/);
-      return m ? parseInt(m[1].replace(/,/g, '')) : 0;
+    // Wait for content page components or empty state to appear
+    const combinedSelector = [
+      '[data-tt="components_PostTable_Absolute"]',
+      '[data-tt*="PostTable"]',
+      'button:has-text("Upload first video")',
+      'button:has-text("Upload video")',
+      'div:has-text("No content")',
+      'div:has-text("No videos")',
+      '[role="row"]'
+    ].join(', ');
+
+    try {
+      await page.waitForSelector(combinedSelector, { timeout: 15000 });
+    } catch {
+      await page.waitForTimeout(3000);
+    }
+
+    if (page.url().includes('login') || page.url().includes('passport')) {
+      log('Redirected to login page while loading stats');
+      throw new Error('Profile chưa đăng nhập hoặc cookie đã hết hạn (bị chuyển hướng sang trang Login).');
+    }
+
+    // Check if channel is empty or has video rows
+    const isEmptyState = await page.evaluate(() => {
+      const text = document.body.innerText || '';
+      return text.includes('Upload first video') ||
+             text.includes('No content') ||
+             text.includes('No videos') ||
+             text.includes('Upload video to get started');
     });
-    log(`Total videos from badge: ${totalVideos}`);
 
-    if (totalVideos === 0) {
-      log('No videos found');
+    const hasRows = await page.evaluate(({ rowSel }) => {
+      return document.querySelectorAll(`${rowSel}, [data-tt*="PostTable"], [class*="PostTable"], [role="row"]`).length > 0;
+    }, { rowSel: ROW_SEL });
+
+    if (isEmptyState && !hasRows) {
+      log('No videos found (empty state confirmed)');
+      pushEvent(jobId, {
+        type: 'progress',
+        profileId: profile.id,
+        profileName: profile.name,
+        done: 0,
+        total: 0,
+      });
       markProfileDone(jobId, profile.id);
       return;
     }
 
+    log('Starting element-index based scan for all videos...');
     pushEvent(jobId, {
       type: 'progress',
       profileId: profile.id,
       profileName: profile.name,
       done: 0,
-      total: totalVideos,
+      total: 0,
     });
 
-    // Wait for rows to appear
-    await page.waitForFunction(
-      (sel) => document.querySelectorAll(sel).length > 0,
-      ROW_SEL,
-      { timeout: 15000 }
-    );
+    let processedCount = 0;
+    const seenVideoKeys = new Set();
+    const MAX_SAFETY_LIMIT = 2000;
+    let rowIndex = 0;
 
-    // Track absolute scroll position. Each row is height="100px" so advance by 100px per video.
-    // Using SPA goBack preserves inner div scroll position, then we set it explicitly.
-    let currentScrollTop = 0;
-
-    for (let i = 0; i < totalVideos; i++) {
+    for (let loop = 0; loop < MAX_SAFETY_LIMIT; loop++) {
       if (isAborted(jobId)) break;
 
-      log(`Processing video ${i + 1}/${totalVideos}`);
+      log(`Scanning video row index ${rowIndex}...`);
 
       // Return to content page if needed
       await ensureContentPage(page, log);
@@ -72,14 +122,12 @@ export async function runStatsForProfile(profile, jobId, ctx) {
           { timeout: 15000 }
         );
       } catch {
-        log(`Video ${i + 1}: rows not found, skipping`);
-        currentScrollTop += 100;
-        continue;
+        log(`Row index ${rowIndex}: table rows not found. Ending scan.`);
+        break;
       }
 
-      // Get first VISIBLE row's data + ChartRise click position.
-      // Sets scroll to currentScrollTop, then finds row whose top >= container.top.
-      const videoData = await page.evaluate(({ rowSel, scrollTop }) => {
+      // Query row at index `rowIndex`
+      let evalResult = await page.evaluate(({ rowSel, idx }) => {
         let container = null, bestArea = 0;
         document.querySelectorAll('*').forEach(el => {
           const s = window.getComputedStyle(el);
@@ -88,69 +136,203 @@ export async function runStatsForProfile(profile, jobId, ctx) {
             if (el.scrollHeight > el.clientHeight + 100 && area > bestArea) { container = el; bestArea = area; }
           }
         });
-        if (container) container.scrollTop = scrollTop;
 
-        const containerRect = container?.getBoundingClientRect() ?? { top: 0, bottom: window.innerHeight };
+        let rows = Array.from(document.querySelectorAll(rowSel));
+        if (rows.length === 0) {
+          rows = Array.from(document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]'));
+        }
 
-        for (const row of document.querySelectorAll(rowSel)) {
-          const rowRect = row.getBoundingClientRect();
-          if (rowRect.top >= containerRect.top - 5 && rowRect.bottom > containerRect.top) {
-            const dateEl = row.querySelector('[data-tt="components_PublishStageLabel_TUXText"]');
-            const viewsEl = row.querySelector('[data-tt="components_ItemRow_TUXText"]');
-            const linkEl = row.querySelector('[data-tt="components_PostInfoCell_a"]');
+        if (idx >= rows.length) {
+          // Scroll container to trigger virtual rendering if there are more rows
+          if (container) container.scrollTop += 500;
+          return { videoData: null, totalRowsInDOM: rows.length };
+        }
 
-            let chartBtn = null;
-            for (const c of row.querySelectorAll('[data-tt="components_ActionCell_Container"]')) {
-              if (c.querySelector('[data-icon="ChartRise"]')) { chartBtn = c; break; }
-            }
-            if (!chartBtn) continue;
+        const row = rows[idx];
+        row.scrollIntoView({ block: 'nearest', behavior: 'instant' });
 
-            const chartRect = chartBtn.getBoundingClientRect();
-            return {
+        const dateEl = row.querySelector('[data-tt="components_PublishStageLabel_TUXText"], [data-tt*="PublishStageLabel"]');
+        const viewsEl = row.querySelector('[data-tt="components_ItemRow_TUXText"], [data-tt*="ItemRow"]');
+        const linkEl = row.querySelector('[data-tt="components_PostInfoCell_a"], a[href*="/video/"]');
+
+        let chartBtn = null;
+        for (const c of row.querySelectorAll('[data-tt="components_ActionCell_Container"], [class*="ActionCell"], div, button, a')) {
+          if (c.querySelector('[data-icon="ChartRise"], svg[class*="ChartRise"], [data-icon*="Chart"]')) { chartBtn = c; break; }
+        }
+        if (!chartBtn && row.querySelector('[data-icon="ChartRise"]')) {
+          chartBtn = row.querySelector('[data-icon="ChartRise"]');
+        }
+
+        if (!chartBtn) {
+          return { videoData: null, totalRowsInDOM: rows.length };
+        }
+
+        const chartRect = chartBtn.getBoundingClientRect();
+        return {
+          videoData: {
+            dateRaw: dateEl?.textContent?.trim() ?? '',
+            views: parseInt(viewsEl?.textContent?.replace(/,/g, '') ?? '0') || 0,
+            videoId: linkEl?.getAttribute('href')?.match(/\/video\/(\d+)/)?.[1] ?? '',
+            clickPos: { cx: chartRect.x + chartRect.width / 2, cy: chartRect.y + chartRect.height / 2 },
+          },
+          totalRowsInDOM: rows.length
+        };
+      }, { rowSel: ROW_SEL, idx: rowIndex });
+
+      // If idx >= totalRowsInDOM, we scrolled container down to see if more rows render
+      if (!evalResult.videoData) {
+        await page.waitForTimeout(1500);
+        evalResult = await page.evaluate(({ rowSel, idx }) => {
+          let rows = Array.from(document.querySelectorAll(rowSel));
+          if (rows.length === 0) {
+            rows = Array.from(document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]'));
+          }
+
+          if (idx >= rows.length) {
+            return { videoData: null, totalRowsInDOM: rows.length };
+          }
+
+          const row = rows[idx];
+          row.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+
+          const dateEl = row.querySelector('[data-tt="components_PublishStageLabel_TUXText"], [data-tt*="PublishStageLabel"]');
+          const viewsEl = row.querySelector('[data-tt="components_ItemRow_TUXText"], [data-tt*="ItemRow"]');
+          const linkEl = row.querySelector('[data-tt="components_PostInfoCell_a"], a[href*="/video/"]');
+
+          let chartBtn = null;
+          for (const c of row.querySelectorAll('[data-tt="components_ActionCell_Container"], [class*="ActionCell"], div, button, a')) {
+            if (c.querySelector('[data-icon="ChartRise"], svg[class*="ChartRise"], [data-icon*="Chart"]')) { chartBtn = c; break; }
+          }
+          if (!chartBtn && row.querySelector('[data-icon="ChartRise"]')) {
+            chartBtn = row.querySelector('[data-icon="ChartRise"]');
+          }
+
+          if (!chartBtn) return { videoData: null, totalRowsInDOM: rows.length };
+
+          const chartRect = chartBtn.getBoundingClientRect();
+          return {
+            videoData: {
               dateRaw: dateEl?.textContent?.trim() ?? '',
               views: parseInt(viewsEl?.textContent?.replace(/,/g, '') ?? '0') || 0,
               videoId: linkEl?.getAttribute('href')?.match(/\/video\/(\d+)/)?.[1] ?? '',
               clickPos: { cx: chartRect.x + chartRect.width / 2, cy: chartRect.y + chartRect.height / 2 },
-            };
-          }
-        }
-        return null;
-      }, { rowSel: ROW_SEL, scrollTop: currentScrollTop });
+            },
+            totalRowsInDOM: rows.length
+          };
+        }, { rowSel: ROW_SEL, idx: rowIndex });
+      }
+
+      const { videoData } = evalResult;
 
       if (!videoData) {
-        log(`Video ${i + 1}: no visible row at scroll=${currentScrollTop}, skipping`);
-        currentScrollTop += 100;
+        log(`No more video rows found at index ${rowIndex}. Finished scanning all ${processedCount} videos!`);
+        break;
+      }
+
+      const videoKey = videoData.videoId || `${videoData.dateRaw}_${videoData.views}_${rowIndex}`;
+      if (seenVideoKeys.has(videoKey)) {
+        log(`Video [${videoKey}] already scanned. Moving to next index...`);
+        rowIndex++;
+        continue;
+      }
+      seenVideoKeys.add(videoKey);
+
+      // Step 1: Hover over the row to trigger CSS :hover and reveal hidden action buttons
+      const rowCenterResult = await page.evaluate(({ rowSel, idx }) => {
+        const rows = Array.from(document.querySelectorAll(rowSel));
+        if (idx >= rows.length) return null;
+        const rect = rows[idx].getBoundingClientRect();
+        return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2 };
+      }, { rowSel: ROW_SEL, idx: rowIndex });
+
+      if (rowCenterResult) {
+        await page.mouse.move(rowCenterResult.cx, rowCenterResult.cy);
+        await page.waitForTimeout(400); // wait for :hover to reveal buttons
+      }
+
+      // Step 2: Re-fetch ChartRise button position (now visible after hover)
+      const chartPos = await page.evaluate(({ rowSel, idx }) => {
+        const rows = Array.from(document.querySelectorAll(rowSel));
+        if (idx >= rows.length) return null;
+        const row = rows[idx];
+        // Find ChartRise icon
+        const icon = row.querySelector('[data-icon="ChartRise"]');
+        if (!icon) return null;
+        // Walk up to clickable container
+        let btn = icon;
+        while (btn && btn !== row) {
+          if (btn.tagName === 'BUTTON' || btn.tagName === 'A' || btn.getAttribute('role') === 'button') break;
+          btn = btn.parentElement;
+        }
+        if (!btn || btn === row) btn = icon;
+        const rect = btn.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return null;
+        return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2 };
+      }, { rowSel: ROW_SEL, idx: rowIndex });
+
+      if (!chartPos) {
+        log(`Video row ${rowIndex}: ChartRise button not visible after hover, skipping`);
+        rowIndex++;
         continue;
       }
 
-      // Click the ChartRise analytics button via mouse (hover triggers CSS :hover, then click)
-      await page.mouse.move(videoData.clickPos.cx, videoData.clickPos.cy - 50);
+      // Step 3: Hover then click the analytics button
+      await page.mouse.move(chartPos.cx, chartPos.cy);
       await page.waitForTimeout(150);
-      await page.mouse.move(videoData.clickPos.cx, videoData.clickPos.cy);
-      await page.waitForTimeout(200);
-      await page.mouse.click(videoData.clickPos.cx, videoData.clickPos.cy);
-      await page.waitForTimeout(4000);
+      await page.mouse.click(chartPos.cx, chartPos.cy);
 
-      if (!page.url().includes('analytics')) {
-        log(`Video ${i + 1}: analytics page not reached, skipping`);
-        currentScrollTop += 100;
+      // Step 4: Wait for analytics URL (max 8s)
+      try {
+        await page.waitForURL('**/analytics**', { timeout: 8000 });
+      } catch {
+        log(`Video row ${rowIndex}: analytics page not reached after click (url=${page.url()}), skipping`);
+        rowIndex++;
         continue;
       }
 
-      // Check restriction banner on analytics page
+      // Wait for analytics page content to fully render (works for both restricted and normal videos)
+      try {
+        await page.waitForSelector('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]', { timeout: 8000 });
+      } catch {
+        log(`Video row ${rowIndex}: analytics content not loaded yet, extracting anyway...`);
+      }
+
+      // Check restriction banner AFTER page has rendered
       const restricted = await checkRestriction(page);
 
-      // Get date from analytics page (has full year); fall back to content page date
-      const bodyText = await page.evaluate(() => document.body.innerText);
-      const analyticsDateMatch = bodyText.match(/Posted on (\d{1,2}\/\d{1,2}\/\d{4})/);
-      const date = analyticsDateMatch ? analyticsDateMatch[1] : parseContentDate(videoData.dateRaw);
+      // Extract date AND views from analytics page
+      const analyticsData = await page.evaluate(() => {
+        // Date: "Posted on 7/20/2026"
+        const bodyText = document.body.innerText || '';
+        const dateMatch = bodyText.match(/Posted on (\d{1,2}\/\d{1,2}\/\d{4})/);
 
-      log(`Video ${i + 1}/${totalVideos}: date=${date} views=${videoData.views} restricted=${restricted}`);
+        // Views: first [data-tt="VideoOverviewPage_VideoInfoCard_TUXText"] = video views count
+        const viewEls = document.querySelectorAll('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]');
+        let views = 0;
+        const allValues = [];
+        for (const el of viewEls) {
+          const text = el.textContent?.trim().replace(/,/g, '');
+          allValues.push(text);
+          const num = parseInt(text);
+          if (!isNaN(num) && num > 0) { views = num; break; }
+        }
+
+        return { date: dateMatch ? dateMatch[1] : null, views, allValues, elCount: viewEls.length };
+      });
+
+      log(`Analytics page: found ${analyticsData.elCount} view elements, values=[${analyticsData.allValues.join(',')}], views=${analyticsData.views}`);
+
+      const date = analyticsData.date ?? parseContentDate(videoData.dateRaw);
+      const views = analyticsData.views || videoData.views;
+
+
+      processedCount++;
+      log(`Video ${processedCount} (Row ${rowIndex}): date=${date} views=${views} restricted=${restricted}`);
 
       const result = {
-        title: videoData.videoId ? `Video ${videoData.videoId}` : `Video ${i + 1}`,
+        title: videoData.videoId ? `Video ${videoData.videoId}` : `Video ${processedCount}`,
         date,
-        views: videoData.views,
+        views,
         restricted,
       };
 
@@ -160,14 +342,22 @@ export async function runStatsForProfile(profile, jobId, ctx) {
         type: 'progress',
         profileId: profile.id,
         profileName: profile.name,
-        done: i + 1,
-        total: totalVideos,
+        done: processedCount,
+        total: processedCount,
       });
 
-      // SPA goBack — preserves inner div scroll, then we set to next position
-      await ensureContentPage(page, log);
-      currentScrollTop += 100; // advance by one row (height="100px")
+      // Advance to next row index
+      rowIndex++;
     }
+
+    // Push final progress update matching exact processed count
+    pushEvent(jobId, {
+      type: 'progress',
+      profileId: profile.id,
+      profileName: profile.name,
+      done: processedCount,
+      total: processedCount,
+    });
 
     markProfileDone(jobId, profile.id);
   } catch (err) {
