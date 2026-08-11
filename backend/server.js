@@ -25,6 +25,12 @@ import {
     assertGroupExists
 } from './group-store.js';
 import { createProfileRecord } from './profile-store.js';
+import {
+  createJob, getJob, addClient, removeClient,
+  pushEvent, appendResult, markProfileDone, markError,
+  markAllDone, cancelJob, isAborted, getExcelBuffer,
+} from './stats-store.js';
+import { runStatsForProfile } from './stats-automation.mjs';
 import { randomUUID } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -6473,5 +6479,89 @@ function checkAndRunSchedules() {
 
 // Run every minute (offset by a few seconds to avoid missing the boundary if execution is slow)
 setInterval(checkAndRunSchedules, 60000);
+
+// ─── STATS FEATURE ───────────────────────────────────────────────────────────
+
+// POST /api/stats/start
+app.post('/api/stats/start', async (req, res) => {
+  const { profileIds } = req.body;
+  if (!Array.isArray(profileIds) || profileIds.length === 0) {
+    return res.status(400).json({ error: 'profileIds required' });
+  }
+
+  const profiles = profileIds
+    .map(id => db.prepare('SELECT * FROM profiles WHERE id = ?').get(id))
+    .filter(Boolean);
+
+  if (profiles.length === 0) {
+    return res.status(400).json({ error: 'No valid profiles found' });
+  }
+
+  const jobId = createJob(profileIds);
+  res.json({ jobId });
+
+  // Run in background — 2 profiles at a time
+  (async () => {
+    const BATCH = 2;
+    const ctx = { PROFILES_DIR, pushEvent, appendResult, markProfileDone, markError, isAborted };
+    for (let i = 0; i < profiles.length; i += BATCH) {
+      if (isAborted(jobId)) break;
+      const batch = profiles.slice(i, i + BATCH);
+      await Promise.allSettled(
+        batch.map(profile => runStatsForProfile(profile, jobId, ctx))
+      );
+    }
+    markAllDone(jobId);
+  })().catch(err => console.error('[Stats] runAll error:', err));
+});
+
+// GET /api/stats/stream/:jobId — SSE
+app.get('/api/stats/stream/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const job = getJob(jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  if (job.status === 'done' || job.status === 'cancelled') {
+    res.write(`data: ${JSON.stringify({ type: 'all_done' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  addClient(jobId, res);
+  req.on('close', () => removeClient(jobId, res));
+});
+
+// GET /api/stats/download/:jobId
+app.get('/api/stats/download/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+  const job = getJob(jobId);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  try {
+    const profileNames = new Map();
+    for (const pid of job.profileIds) {
+      const p = db.prepare('SELECT name FROM profiles WHERE id = ?').get(pid);
+      if (p) profileNames.set(pid, p.name);
+    }
+    const buffer = await getExcelBuffer(jobId, profileNames);
+    const date = new Date().toISOString().split('T')[0];
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="tiktok_stats_${date}.xlsx"`);
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/stats/cancel/:jobId
+app.delete('/api/stats/cancel/:jobId', (req, res) => {
+  cancelJob(req.params.jobId);
+  res.json({ ok: true });
+});
 
 app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));

@@ -33,10 +33,12 @@ import {
   Upload,
   LogIn,
   Image,
-  Camera
+  Camera,
+  BarChart2
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'framer-motion';
+import StatsModal from './components/StatsModal';
 const ProfileCard = React.memo(React.forwardRef(({
   profile,
   isSelected,
@@ -403,6 +405,8 @@ const App = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportResults, setExportResults] = useState(null);
   const [editingProfileId, setEditingProfileId] = useState(null);
+  const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
+  const [statsProfileIds, setStatsProfileIds] = useState([]);
 
 
   const filteredProfiles = useMemo(() => {
@@ -919,6 +923,16 @@ const App = () => {
       setMessage({ type: 'error', text: err.response?.data?.error || 'Lỗi khi dọn rác' });
     }
     setTimeout(() => setMessage(null), 5000);
+  };
+
+  const openStatsModal = () => {
+    if (selectedForRun.size === 0) {
+      setMessage({ type: 'error', text: 'Chọn ít nhất một profile để thống kê.' });
+      setTimeout(() => setMessage(null), 3000);
+      return;
+    }
+    setStatsProfileIds([...selectedForRun]);
+    setIsStatsModalOpen(true);
   };
 
   const clearDebugFiles = async () => {
@@ -1672,6 +1686,16 @@ const App = () => {
                   >
                     {isLoading ? <RefreshCw className="animate-pulse" size={18} /> : <Play fill="white" size={18} />}
                     Chạy đã chọn
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={openStatsModal}
+                    disabled={selectedForRun.size === 0}
+                    title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần thống kê' : 'Thống kê video cho các profile đã chọn'}
+                    style={{ gap: '10px' }}
+                  >
+                    <BarChart2 size={18} />
+                    Thống kê
                   </button>
 
                   {/* Bulk Login button */}
@@ -3144,6 +3168,13 @@ const App = () => {
         )}
       </AnimatePresence>
 
+      {/* Stats Modal */}
+      <StatsModal
+        isOpen={isStatsModalOpen}
+        profileIds={statsProfileIds}
+        onClose={() => setIsStatsModalOpen(false)}
+      />
+
       {/* Flash Toast Message */}
       <AnimatePresence>
         {message && (
@@ -3183,7 +3214,6 @@ const App = () => {
           </motion.div>
         )}
       </AnimatePresence>
-
     </div>
   );
 };
