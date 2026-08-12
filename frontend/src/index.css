@@ -84,6 +84,15 @@ body {
   border-color: var(--primary);
 }
 
+input[type="date"].input {
+  color-scheme: dark;
+}
+
+input[type="date"].input::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  cursor: pointer;
+}
+
 .card {
   padding: 24px;
   border-radius: 16px;

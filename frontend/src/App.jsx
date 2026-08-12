@@ -358,7 +358,7 @@ ProfileCard.displayName = 'ProfileCard';
 
 const App = () => {
   const [profiles, setProfiles] = useState([]);
-  const [config, setConfig] = useState({ videoFolder: '', maxConcurrency: 2 });
+  const [config, setConfig] = useState({ videoFolder: '', maxConcurrency: 2, statsLimitDate: null });
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileGroupId, setNewProfileGroupId] = useState('');
   const [newProfileVideoFolder, setNewProfileVideoFolder] = useState('');
@@ -1380,12 +1380,14 @@ const App = () => {
   };
 
   return (
-    <div className="container" style={{ padding: '40px 20px', maxWidth: '1400px', margin: '0 auto' }}>
+    <div className="container" style={{ padding: '20px 20px', maxWidth: '1400px', margin: '0 auto', height: '100vh', boxSizing: 'border-box' }}>
       {/* Sidebar / Navigation */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: sidebarCollapsed ? '60px 1fr' : '280px 1fr',
         gap: '40px',
+        height: '100%',
+        overflow: 'hidden',
         transition: 'grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
       }}>
         <motion.aside
@@ -1519,7 +1521,7 @@ const App = () => {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              style={{ padding: '24px', borderRadius: '20px', marginTop: 'auto' }}
+              style={{ padding: '24px', borderRadius: '20px' }}
             >
               <h4 style={{ fontSize: '0.9rem', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <ShieldCheck size={16} color="var(--success)" /> System Status
@@ -1533,13 +1535,17 @@ const App = () => {
                   <span>Concurrency</span>
                   <span style={{ color: 'white' }}>{config.maxConcurrency}</span>
                 </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  <span>Stats Date Limit</span>
+                  <span style={{ color: 'white' }}>{config.statsLimitDate || 'None'}</span>
+                </div>
               </div>
             </motion.div>
           )}
         </motion.aside>
 
         {/* Main Content */}
-        <main>
+        <main style={{ overflowY: 'auto', height: '100%' }}>
           {/* Flash message is now rendered as fixed toast below */}
 
           {activeTab === 'profiles' ? (
@@ -3083,6 +3089,74 @@ const App = () => {
                     </div>
                     <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
                       Control how many browser instances run concurrently.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '10px', fontSize: '0.95rem', fontWeight: '600' }}>
+                      Stats Date Limit
+                    </label>
+                    <div
+                      className="input"
+                      style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '0', overflow: 'hidden' }}
+                    >
+                      <span style={{ flex: 1, padding: '12px 0 12px 16px', color: config.statsLimitDate ? 'white' : 'var(--text-muted)' }}>
+                        {config.statsLimitDate
+                          ? new Date(config.statsLimitDate + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })
+                          : 'Select date...'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const hiddenInput = document.getElementById('stats-limit-date-hidden');
+                          if (hiddenInput) hiddenInput.showPicker();
+                        }}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          padding: '12px 16px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          borderLeft: '1px solid var(--border)',
+                        }}
+                      >
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
+                          <line x1="16" y1="2" x2="16" y2="6" />
+                          <line x1="8" y1="2" x2="8" y2="6" />
+                          <line x1="3" y1="10" x2="21" y2="10" />
+                        </svg>
+                      </button>
+                      {config.statsLimitDate && (
+                        <button
+                          type="button"
+                          onClick={() => setConfig({ ...config, statsLimitDate: null })}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            padding: '12px 16px 12px 4px',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      id="stats-limit-date-hidden"
+                      type="date"
+                      style={{ position: 'absolute', opacity: 0, pointerEvents: 'none', width: 0, height: 0 }}
+                      value={config.statsLimitDate || ''}
+                      onChange={(e) => setConfig({ ...config, statsLimitDate: e.target.value || null })}
+                    />
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                      Only scan videos from newest to this date. Leave empty to scan all videos.
                     </p>
                   </div>
 

@@ -169,7 +169,7 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
         </div>
 
         {/* ── Body ── */}
-        <div className="modal-body modal-scroll">
+        <div className="modal-body" style={{ overflow: 'visible' }}>
           {/* Error banner */}
           {error && (
             <div className="stats-error-banner">
@@ -186,7 +186,7 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
             </div>
           )}
 
-          {/* Summary cards */}
+          {/* Summary cards — stays fixed above scroll area */}
           {(logCount > 0 || totalVideos > 0) && (
             <div className="stats-summary">
               <div className="stats-summary-card">
@@ -213,83 +213,86 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
             </div>
           )}
 
-          {/* Per-profile progress cards */}
-          {profileList.map(([pid, p]) => {
-            const status = getStatus(p);
-            const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
-            return (
-              <div key={pid} className={`stats-profile-card ${status}`}>
-                <div className="stats-profile-header">
-                  <span className="stats-profile-name">
-                    {status === 'done'
-                      ? <CheckCircle2 size={15} color="var(--success)" />
-                      : <Loader2 size={15} className="stats-spinner" color="var(--primary)" />
-                    }
-                    {p.name}
-                  </span>
-                  <span className={`stats-profile-status ${status}`}>
-                    {status === 'done' ? 'Hoàn thành' : 'Đang quét...'}
-                  </span>
+          {/* Scrollable area: profile cards + logs */}
+          <div className="modal-scroll" style={{ maxHeight: '50vh', overflowY: 'auto' }}>
+            {/* Per-profile progress cards */}
+            {profileList.map(([pid, p]) => {
+              const status = getStatus(p);
+              const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+              return (
+                <div key={pid} className={`stats-profile-card ${status}`}>
+                  <div className="stats-profile-header">
+                    <span className="stats-profile-name">
+                      {status === 'done'
+                        ? <CheckCircle2 size={15} color="var(--success)" />
+                        : <Loader2 size={15} className="stats-spinner" color="var(--primary)" />
+                      }
+                      {p.name}
+                    </span>
+                    <span className={`stats-profile-status ${status}`}>
+                      {status === 'done' ? 'Hoàn thành' : 'Đang quét...'}
+                    </span>
+                  </div>
+                  <div className="stats-progress-bar">
+                    <div
+                      className="stats-progress-fill"
+                      style={{ width: `${p.total > 0 ? pct : (status === 'done' ? 100 : 0)}%` }}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5 }}>
+                    <span className="stats-progress-count">
+                      {p.done}{p.total > 0 && ` / ${p.total} video`}
+                    </span>
+                    {p.total > 0 && (
+                      <span className="stats-progress-count">{pct}%</span>
+                    )}
+                  </div>
                 </div>
-                <div className="stats-progress-bar">
-                  <div
-                    className="stats-progress-fill"
-                    style={{ width: `${p.total > 0 ? pct : (status === 'done' ? 100 : 0)}%` }}
-                  />
+              );
+            })}
+
+            {/* Log panel */}
+            {logs.length > 0 && (
+              <div className="stats-log-panel">
+                {/* Header row */}
+                <div className="stats-log-row" style={{ background: 'rgba(255,255,255,0.03)', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
+                  <span style={{ minWidth: 90 }}>Ngày đăng</span>
+                  <span style={{ textAlign: 'right' }}>Lượt xem</span>
+                  <span style={{ textAlign: 'center', minWidth: 90 }}>Trạng thái</span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5 }}>
-                  <span className="stats-progress-count">
-                    {p.done}{p.total > 0 && ` / ${p.total} video`}
-                  </span>
-                  {p.total > 0 && (
-                    <span className="stats-progress-count">{pct}%</span>
-                  )}
-                </div>
+                {logs.map((log, i) => (
+                  <div key={i} className="stats-log-row">
+                    <span className="stats-log-date">{log.date || '—'}</span>
+                    <span className="stats-log-views">{log.views?.toLocaleString() || 0}</span>
+                    {log.isError ? (
+                      <span className="stats-log-badge restricted">Lỗi</span>
+                    ) : log.restricted ? (
+                      <span className="stats-log-badge restricted">Hạn chế</span>
+                    ) : (
+                      <span className="stats-log-badge ok">OK</span>
+                    )}
+                  </div>
+                ))}
+                <div ref={logsEnd} />
               </div>
-            );
-          })}
+            )}
 
-          {/* Log panel */}
-          {logs.length > 0 && (
-            <div className="stats-log-panel">
-              {/* Header row */}
-              <div className="stats-log-row" style={{ background: 'rgba(255,255,255,0.03)', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
-                <span style={{ minWidth: 90 }}>Ngày đăng</span>
-                <span style={{ textAlign: 'right' }}>Lượt xem</span>
-                <span style={{ textAlign: 'center', minWidth: 90 }}>Trạng thái</span>
+            {/* Empty log — waiting */}
+            {logs.length === 0 && !isStarting && profileList.length > 0 && (
+              <div className="stats-empty-state" style={{ padding: '20px' }}>
+                <Loader2 size={22} className="stats-spinner" color="var(--primary)" />
+                <span style={{ fontSize: '0.82rem' }}>Đang thu thập dữ liệu video...</span>
               </div>
-              {logs.map((log, i) => (
-                <div key={i} className="stats-log-row">
-                  <span className="stats-log-date">{log.date || '—'}</span>
-                  <span className="stats-log-views">{log.views?.toLocaleString() || 0}</span>
-                  {log.isError ? (
-                    <span className="stats-log-badge restricted">Lỗi</span>
-                  ) : log.restricted ? (
-                    <span className="stats-log-badge restricted">Hạn chế</span>
-                  ) : (
-                    <span className="stats-log-badge ok">OK</span>
-                  )}
-                </div>
-              ))}
-              <div ref={logsEnd} />
-            </div>
-          )}
+            )}
 
-          {/* Empty log — waiting */}
-          {logs.length === 0 && !isStarting && profileList.length > 0 && (
-            <div className="stats-empty-state" style={{ padding: '20px' }}>
-              <Loader2 size={22} className="stats-spinner" color="var(--primary)" />
-              <span style={{ fontSize: '0.82rem' }}>Đang thu thập dữ liệu video...</span>
-            </div>
-          )}
-
-          {/* Done banner */}
-          {(isDone || allProfilesDone) && logCount > 0 && (
-            <div className="stats-done-banner">
-              <CheckCircle2 size={18} />
-              Hoàn thành! {logCount} video đã được thống kê từ {profileList.length} profile.
-            </div>
-          )}
+            {/* Done banner */}
+            {(isDone || allProfilesDone) && logCount > 0 && (
+              <div className="stats-done-banner">
+                <CheckCircle2 size={18} />
+                Hoàn thành! {logCount} video đã được thống kê từ {profileList.length} profile.
+              </div>
+            )}
+          </div>
         </div>
 
         {/* ── Footer ── */}

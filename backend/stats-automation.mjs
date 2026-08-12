@@ -3,8 +3,8 @@ import { chromium } from 'playwright';
 import path from 'path';
 
 const CONTENT_URL = 'https://www.tiktok.com/tiktokstudio/content';
-const RESTRICTION_TEXT = 'Your video is not eligible for recommendation in the For You feed';
-const ROW_SEL = '[data-tt="components_PostTable_Absolute"]';
+const ANALYTICS_URL = 'https://www.tiktok.com/tiktokstudio/analytics';
+const API_PATH = '/tiktok/creator/manage/item_list/v1/';
 
 export async function runStatsForProfile(profile, jobId, ctx) {
   const {
@@ -16,7 +16,7 @@ export async function runStatsForProfile(profile, jobId, ctx) {
     isAborted,
     applyProfileFingerprint,
     injectProfileCookies,
-    parseProxy
+    statsLimitDate,
   } = ctx;
   const userDataDir = path.join(PROFILES_DIR, profile.name);
   let browser = null;
@@ -28,7 +28,6 @@ export async function runStatsForProfile(profile, jobId, ctx) {
       args: ['--disable-blink-features=AutomationControlled', '--window-size=1440,900'],
       viewport: { width: 1440, height: 900 },
     };
-    // Stats automation does NOT use proxy — direct connection for stability
 
     browser = await chromium.launchPersistentContext(userDataDir, browserOptions);
 
@@ -44,254 +43,88 @@ export async function runStatsForProfile(profile, jobId, ctx) {
     log('Opening TikTok Studio content page');
     await page.goto(CONTENT_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
-    // Wait for content page components or empty state to appear
-    const combinedSelector = [
-      '[data-tt="components_PostTable_Absolute"]',
-      '[data-tt*="PostTable"]',
-      'button:has-text("Upload first video")',
-      'button:has-text("Upload video")',
-      'div:has-text("No content")',
-      'div:has-text("No videos")',
-      '[role="row"]'
-    ].join(', ');
-
-    try {
-      await page.waitForSelector(combinedSelector, { timeout: 15000 });
-    } catch {
-      await page.waitForTimeout(3000);
-    }
+    // Wait for page to fully load (API calls happen after initial render)
+    await page.waitForTimeout(4000);
 
     if (page.url().includes('login') || page.url().includes('passport')) {
-      log('Redirected to login page while loading stats');
+      log('Redirected to login page');
       throw new Error('Profile chưa đăng nhập hoặc cookie đã hết hạn (bị chuyển hướng sang trang Login).');
     }
 
-    // Check if channel is empty or has video rows
-    const isEmptyState = await page.evaluate(() => {
-      const text = document.body.innerText || '';
-      return text.includes('Upload first video') ||
-             text.includes('No content') ||
-             text.includes('No videos') ||
-             text.includes('Upload video to get started');
-    });
+    // ── Phase 1: Discover all video IDs via TikTok's internal API ──
+    log('Phase 1: Discovering all videos via API pagination...');
 
-    const hasRows = await page.evaluate(({ rowSel }) => {
-      return document.querySelectorAll(`${rowSel}, [data-tt*="PostTable"], [class*="PostTable"], [role="row"]`).length > 0;
-    }, { rowSel: ROW_SEL });
+    const videos = await discoverAllVideos(page, log, isAborted, jobId, statsLimitDate);
 
-    if (isEmptyState && !hasRows) {
-      log('No videos found (empty state confirmed)');
+    if (videos.length === 0) {
+      log('No videos found');
       pushEvent(jobId, {
-        type: 'progress',
-        profileId: profile.id,
-        profileName: profile.name,
-        done: 0,
-        total: 0,
+        type: 'progress', profileId: profile.id, profileName: profile.name, done: 0, total: 0,
       });
       markProfileDone(jobId, profile.id);
       return;
     }
 
-    log('Starting full scan for all videos...');
+    log(`Discovered ${videos.length} unique videos`);
+
     pushEvent(jobId, {
-      type: 'progress',
-      profileId: profile.id,
-      profileName: profile.name,
-      done: 0,
-      total: 0,
+      type: 'progress', profileId: profile.id, profileName: profile.name, done: 0, total: videos.length,
     });
 
+    // ── Phase 2: Extract stats for each video ──
     let processedCount = 0;
-    const seenVideoKeys = new Set();
-    const MAX_SAFETY_LIMIT = 2000;
-    let consecutiveNoNewVideos = 0;
 
-    for (let loop = 0; loop < MAX_SAFETY_LIMIT; loop++) {
-      if (isAborted(jobId)) break;
-
-      // Return to content page if needed
-      await ensureContentPage(page, log);
-
-      // Wait for rows to appear
-      try {
-        await page.waitForFunction(
-          (sel) => document.querySelectorAll(sel).length > 0,
-          ROW_SEL,
-          { timeout: 15000 }
-        );
-      } catch {
-        const currentUrl = page.url();
-        log(`Table rows not found (url=${currentUrl}). Ending scan. Processed: ${processedCount}, seenKeys: ${seenVideoKeys.size}`);
+    for (const video of videos) {
+      if (isAborted(jobId)) {
+        log('Job aborted');
         break;
       }
 
-      // Find the first unvisited row in DOM
-      const nextRow = await page.evaluate(({ rowSel, seenKeys }) => {
-        let rows = Array.from(document.querySelectorAll(rowSel));
-        if (rows.length === 0) {
-          rows = Array.from(document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]'));
-        }
+      log(`[${processedCount + 1}/${videos.length}] Extracting stats for video ${video.id}...`);
 
-        const seenSet = new Set(seenKeys);
-
-        for (let i = 0; i < rows.length; i++) {
-          const row = rows[i];
-          const dateEl = row.querySelector('[data-tt="components_PublishStageLabel_TUXText"], [data-tt*="PublishStageLabel"]');
-          const viewsEl = row.querySelector('[data-tt="components_ItemRow_TUXText"], [data-tt*="ItemRow"]');
-
-          // Search broadly for a video link — try link selectors, then any <a> with a numeric ID in href
-          let linkEl = row.querySelector('a[href*="/video/"]') ||
-                       row.querySelector('[data-tt="components_PostInfoCell_a"]') ||
-                       row.querySelector('a[href*="tiktok.com"]');
-          if (!linkEl) {
-            const allLinks = row.querySelectorAll('a');
-            for (const a of allLinks) {
-              if (/\/video\/\d+/.test(a.getAttribute('href') || '')) { linkEl = a; break; }
-            }
-          }
-
-          const videoId = linkEl?.getAttribute('href')?.match(/\/video\/(\d+)/)?.[1] ?? '';
-          const dateRaw = dateEl?.textContent?.trim() ?? '';
-          const views = parseInt(viewsEl?.textContent?.replace(/,/g, '') ?? '0') || 0;
-          const key = videoId || (dateRaw ? `${dateRaw}_${views}_${i}` : `row_${i}`);
-
-          if (!seenSet.has(key)) {
-            row.scrollIntoView({ block: 'center', behavior: 'instant' });
-            const rect = row.getBoundingClientRect();
-            return {
-              found: true,
-              domIndex: i,
-              videoKey: key,
-              dateRaw,
-              views,
-              videoId,
-              rowCenter: { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2 }
-            };
-          }
-        }
-
-        return { found: false, totalDOMRows: rows.length };
-      }, { rowSel: ROW_SEL, seenKeys: Array.from(seenVideoKeys) });
-
-      if (!nextRow.found) {
-        // TikTok Studio uses overflow:hidden virtual scroll — DOM scroll methods have no effect.
-        // Only native OS-level wheel events (via CDP) trigger the virtual scroll handler.
-        const wheelDelta = consecutiveNoNewVideos === 0 ? -600 : -900;
-        await page.mouse.wheel(0, wheelDelta);
-        await page.waitForTimeout(1500);
-
-        const rowCountAfterWheel = await page.evaluate((sel) => {
-          let rows = document.querySelectorAll(sel);
-          if (rows.length === 0) {
-            rows = document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]');
-          }
-          return rows.length;
-        }, ROW_SEL);
-
-        if (rowCountAfterWheel > nextRow.totalDOMRows) {
-          log(`Wheel scroll loaded more rows: ${nextRow.totalDOMRows} → ${rowCountAfterWheel}`);
-          consecutiveNoNewVideos = 0;
-          continue;
-        }
-
-        consecutiveNoNewVideos++;
-        log(`No new rows after wheel scroll (attempt ${consecutiveNoNewVideos}/2). totalDOMRows=${nextRow.totalDOMRows} seenKeys=${seenVideoKeys.size}`);
-        if (consecutiveNoNewVideos >= 2) {
-          log(`Finished scanning all videos! Total scanned: ${processedCount}, unique keys: ${seenVideoKeys.size}`);
-          break;
-        }
-        await page.waitForTimeout(1000);
-        continue;
-      }
-
-      consecutiveNoNewVideos = 0;
-      seenVideoKeys.add(nextRow.videoKey);
-      log(`Scanning video ${processedCount + 1} [${nextRow.videoKey}]...`);
-
-      // Step 1: Hover over the row to trigger CSS :hover and reveal hidden action buttons
-      await page.mouse.move(nextRow.rowCenter.cx, nextRow.rowCenter.cy);
-      await page.waitForTimeout(400);
-
-      // Step 2: Re-fetch ChartRise button position
-      const chartPos = await page.evaluate(({ rowSel, domIdx }) => {
-        let rows = Array.from(document.querySelectorAll(rowSel));
-        if (rows.length === 0) rows = Array.from(document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]'));
-        const row = rows[domIdx];
-        if (!row) return null;
-        const icon = row.querySelector('[data-icon="ChartRise"], svg[class*="ChartRise"], [data-icon*="Chart"]');
-        if (!icon) return null;
-        let btn = icon;
-        while (btn && btn !== row) {
-          if (btn.tagName === 'BUTTON' || btn.tagName === 'A' || btn.getAttribute('role') === 'button') break;
-          btn = btn.parentElement;
-        }
-        if (!btn || btn === row) btn = icon;
-        const rect = btn.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) return null;
-        return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2 };
-      }, { rowSel: ROW_SEL, domIdx: nextRow.domIndex });
-
-      if (!chartPos) {
-        log(`Video [${nextRow.videoKey}]: ChartRise button not visible after hover, skipping`);
-        continue;
-      }
-
-      // Step 3: Hover then click the analytics button
-      await page.mouse.move(chartPos.cx, chartPos.cy);
-      await page.waitForTimeout(150);
-      await page.mouse.click(chartPos.cx, chartPos.cy);
-
-      // Step 4: Wait for analytics URL (max 8s)
+      // Navigate directly to analytics page for this video
+      const analyticsUrl = `${ANALYTICS_URL}/${video.id}`;
       try {
-        await page.waitForURL('**/analytics**', { timeout: 8000 });
+        await page.goto(analyticsUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
       } catch {
-        log(`Video [${nextRow.videoKey}]: analytics page not reached after click (url=${page.url()}), skipping`);
+        log(`Navigation to analytics for ${video.id} timed out, skipping`);
         continue;
       }
 
-      // Extract videoId from analytics URL: .../tiktokstudio/analytics/7673006199935175966
-      const urlVideoId = (page.url().match(/\/analytics\/(\d+)/) || [])[1] || '';
-      const videoId = nextRow.videoId || urlVideoId;
-      if (urlVideoId && !seenVideoKeys.has(urlVideoId)) seenVideoKeys.add(urlVideoId);
-
-      // Wait for analytics page content to fully render (works for both restricted and normal videos)
+      // Wait for analytics content
       try {
         await page.waitForSelector('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]', { timeout: 8000 });
       } catch {
-        log(`Video [${nextRow.videoKey}]: analytics content not loaded yet, extracting anyway...`);
+        // Continue anyway — restriction page may not have this element
       }
 
-      // Check restriction banner AFTER page has rendered
+      // Check restriction
       const restricted = await checkRestriction(page);
 
-      // Extract date AND views from analytics page
+      // Extract date and views
       const analyticsData = await page.evaluate(() => {
-        // Date: "Posted on 7/20/2026"
         const bodyText = document.body.innerText || '';
         const dateMatch = bodyText.match(/Posted on (\d{1,2}\/\d{1,2}\/\d{4})/);
 
-        // Views: first [data-tt="VideoOverviewPage_VideoInfoCard_TUXText"] = video views count
         const viewEls = document.querySelectorAll('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]');
         let views = 0;
-        const allValues = [];
         for (const el of viewEls) {
           const text = el.textContent?.trim().replace(/,/g, '');
-          allValues.push(text);
           const num = parseInt(text);
           if (!isNaN(num) && num > 0) { views = num; break; }
         }
 
-        return { date: dateMatch ? dateMatch[1] : null, views, allValues, elCount: viewEls.length };
+        return { date: dateMatch ? dateMatch[1] : null, views };
       });
 
-      const date = analyticsData.date ?? parseContentDate(nextRow.dateRaw);
-      const views = analyticsData.views || nextRow.views;
+      const date = analyticsData.date ?? video.date ?? '';
+      const views = analyticsData.views || 0;
 
       processedCount++;
-      log(`Video ${processedCount} [${videoId || nextRow.videoKey}]: date=${date} views=${views} restricted=${restricted}`);
+      log(`  -> date=${date} views=${views.toLocaleString()} restricted=${restricted}`);
 
       const result = {
-        title: videoId ? `Video ${videoId}` : `Video ${processedCount}`,
+        title: `Video ${video.id}`,
         date,
         views,
         restricted,
@@ -304,20 +137,20 @@ export async function runStatsForProfile(profile, jobId, ctx) {
         profileId: profile.id,
         profileName: profile.name,
         done: processedCount,
-        total: processedCount,
+        total: videos.length,
       });
     }
 
-    // Push final progress update matching exact processed count
     pushEvent(jobId, {
       type: 'progress',
       profileId: profile.id,
       profileName: profile.name,
       done: processedCount,
-      total: processedCount,
+      total: videos.length,
     });
 
     markProfileDone(jobId, profile.id);
+    log(`Done! Processed ${processedCount}/${videos.length} videos`);
   } catch (err) {
     log(`Error: ${err.message}`);
     markError(jobId, profile.id, err.message);
@@ -326,45 +159,125 @@ export async function runStatsForProfile(profile, jobId, ctx) {
   }
 }
 
-// Return to content page: SPA goBack first (fast, preserves scroll), fall back to goto
-async function ensureContentPage(page, log) {
-  const url = page.url();
-  if (url.includes('tiktokstudio/content') && !url.includes('analytics')) return;
+// Paginate through TikTok's internal API to discover all video IDs
+async function discoverAllVideos(page, log, isAborted, jobId, statsLimitDate) {
+  const allVideos = [];
+  const seenIds = new Set();
+  const limitTs = statsLimitDate ? new Date(statsLimitDate + 'T00:00:00').getTime() / 1000 : null;
 
-  try {
-    await page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 });
-    await page.waitForTimeout(800);
-  } catch { /* ignore */ }
+  // Build the base URL params from the page context
+  const baseParams = await page.evaluate(() => {
+    const p = new URLSearchParams({
+      locale: 'en',
+      aid: '1988',
+      priority_region: 'VN',
+      region: 'US',
+      app_name: 'tiktok_creator_center',
+      app_language: 'en',
+      device_platform: 'web_pc',
+      channel: 'tiktok_web',
+      os: 'mac',
+      screen_width: String(window.screen.width || 1440),
+      screen_height: String(window.screen.height || 900),
+      browser_language: navigator.language || 'en-US',
+      browser_platform: navigator.platform || 'MacIntel',
+      browser_name: 'Mozilla',
+      browser_version: navigator.userAgent?.match(/Chrome\/([\d.]+)/)?.[1]
+        ? `5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${navigator.userAgent.match(/Chrome\/([\d.]+)/)[1]} Safari/537.36`
+        : '5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+    });
+    return p.toString();
+  });
 
-  if (!page.url().includes('tiktokstudio/content') || page.url().includes('analytics')) {
-    if (log) log('goBack failed, navigating to content page');
-    await page.goto(CONTENT_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await page.waitForTimeout(2500);
+  let cursor = 0;
+  let hasMore = true;
+  const MAX_PAGES = 20;
+
+  while (hasMore && !isAborted(jobId) && cursor < 10000) {
+    const pageResult = await page.evaluate(async ({ apiPath, baseParams, cursor, limitTs }) => {
+      try {
+        const body = JSON.stringify({
+          cursor: cursor,
+          size: 50,
+          query: {
+            sort_orders: [{ field_name: 'post_time', order: 2 }],
+            conditions: [],
+            is_recent_posts: false
+          }
+        });
+
+        const resp = await fetch(apiPath + '?' + baseParams, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'content-type': 'application/json',
+            'accept': 'application/json',
+          },
+          body: body,
+        });
+
+        const data = await resp.json();
+        const allItems = (data.item_list || []).map(item => ({
+          id: item.item_id || item.aweme_id || '',
+          title: (item.title || '').substring(0, 80),
+          date: item.create_time ? new Date(item.create_time * 1000).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : '',
+          create_time: item.create_time || 0,
+        }));
+
+        // Filter by limit date if set (API returns newest first)
+        const items = limitTs ? allItems.filter(item => item.create_time >= limitTs) : allItems;
+        const allOutOfRange = limitTs && allItems.length > 0 && items.length === 0;
+
+        return {
+          items,
+          hasMore: allOutOfRange ? false : (data.has_more || false),
+          nextCursor: data.cursor || cursor + 50,
+          statusCode: data.status_code,
+          allOutOfRange,
+        };
+      } catch (e) {
+        return { error: e.message, items: [], hasMore: false, nextCursor: cursor };
+      }
+    }, { apiPath: API_PATH, baseParams, cursor, limitTs });
+
+    if (pageResult.error) {
+      log(`API error at cursor ${cursor}: ${pageResult.error}`);
+      break;
+    }
+
+    if (pageResult.allOutOfRange) {
+      log(`Cursor ${cursor}: all ${pageResult.items.length} videos older than limit date, stopping`);
+      break;
+    }
+
+    let newCount = 0;
+    for (const video of pageResult.items) {
+      if (video.id && !seenIds.has(video.id)) {
+        seenIds.add(video.id);
+        allVideos.push(video);
+        newCount++;
+      }
+    }
+
+    log(`Cursor ${cursor}: ${newCount} new videos (total: ${allVideos.length}, has_more: ${pageResult.hasMore})`);
+
+    hasMore = pageResult.hasMore;
+    cursor = pageResult.nextCursor;
+
+    if (allVideos.length >= MAX_PAGES * 50) {
+      log(`Safety limit reached (${MAX_PAGES * 50} videos)`);
+      break;
+    }
   }
+
+  log(`Discovery complete: ${allVideos.length} unique videos`);
+  return allVideos;
 }
 
 async function checkRestriction(page) {
   return await page.evaluate(() => {
-    // Check by specific data-tt selector first (DOM presence, CSS-independent)
     const banner = document.querySelector('[data-tt="components_AnalyticsPageBanner_TUXText"]');
     if (banner) return true;
-    // Fallback: textContent (not innerText) ignores CSS visibility
     return (document.body.textContent || '').includes('not eligible for recommendation');
   });
-}
-
-function parseContentDate(text) {
-  // "Jul 13, 2025" with explicit year
-  const withYear = text.match(/(\w{3})\s+(\d{1,2}),\s+(\d{4})/);
-  if (withYear) {
-    const m = { Jan:1, Feb:2, Mar:3, Apr:4, May:5, Jun:6, Jul:7, Aug:8, Sep:9, Oct:10, Nov:11, Dec:12 };
-    return `${m[withYear[1]]}/${withYear[2]}/${withYear[3]}`;
-  }
-  // "Jul 13, 4:20 PM" with time instead of year — assume current year
-  const withTime = text.match(/(\w{3})\s+(\d{1,2}),/);
-  if (withTime) {
-    const m = { Jan:1, Feb:2, Mar:3, Apr:4, May:5, Jun:6, Jul:7, Aug:8, Sep:9, Oct:10, Nov:11, Dec:12 };
-    return `${m[withTime[1]]}/${withTime[2]}/${new Date().getFullYear()}`;
-  }
-  return text;
 }

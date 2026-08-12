@@ -373,7 +373,11 @@ const getConfig = (key, defaultValue) => {
     return row ? row.value : defaultValue;
 };
 const setConfig = (key, value) => {
-    db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(key, String(value));
+    if (value === null || value === undefined) {
+        db.prepare('DELETE FROM config WHERE key = ?').run(key);
+    } else {
+        db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)').run(key, String(value));
+    }
 };
 
 if (!getConfig('videoFolder', null)) setConfig('videoFolder', UPLOADS_DIR);
@@ -6512,7 +6516,8 @@ app.post('/api/stats/start', async (req, res) => {
       isAborted,
       applyProfileFingerprint: null, // not available in this branch; stats-automation guards typeof === 'function'
       injectProfileCookies,
-      parseProxy
+      parseProxy,
+      statsLimitDate: getConfig('statsLimitDate', null) || null,
     };
     for (let i = 0; i < profiles.length; i += BATCH) {
       if (isAborted(jobId)) break;
