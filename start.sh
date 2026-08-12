@@ -35,7 +35,7 @@ if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
 fi
 
 echo -e "${GREEN}Starting backend on port 3010...${NC}"
-cd "$BACKEND_DIR" && node server.js &
+cd "$BACKEND_DIR" && npm rebuild better-sqlite3 --build-from-source 2>/dev/null && node server.js &
 BACKEND_PID=$!
 
 # Wait for backend to be ready

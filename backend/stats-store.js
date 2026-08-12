@@ -163,7 +163,12 @@ export async function getExcelBuffer(jobId, profileNames) {
       restrictedCount: profileRestrictedCount,
     });
 
-    if (profileRestrictedCount > 0) {
+    if (profileTotalViews === 0) {
+      summaryRow.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFCCC7' } };
+        cell.font = { color: { argb: 'FFA8071A' }, bold: true };
+      });
+    } else if (profileRestrictedCount > 0) {
       const cell = summaryRow.getCell('restrictedCount');
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFCCC7' } };
       cell.font = { color: { argb: 'FFA8071A' }, bold: true };

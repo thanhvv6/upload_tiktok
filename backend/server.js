@@ -6510,7 +6510,7 @@ app.post('/api/stats/start', async (req, res) => {
       markProfileDone,
       markError,
       isAborted,
-      applyProfileFingerprint,
+      applyProfileFingerprint: null, // not available in this branch; stats-automation guards typeof === 'function'
       injectProfileCookies,
       parseProxy
     };

@@ -1,6 +1,10 @@
 // frontend/src/components/StatsModal.jsx
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Download, StopCircle, BarChart2 } from 'lucide-react';
+import {
+  X, Download, StopCircle, BarChart2,
+  CheckCircle2, AlertCircle, Loader2, FileSpreadsheet,
+  Video, Hash, Flag
+} from 'lucide-react';
 
 export default function StatsModal({ isOpen, profileIds, onClose }) {
   const [jobId, setJobId]       = useState(null);
@@ -12,12 +16,10 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
   const esRef   = useRef(null);
   const logsEnd = useRef(null);
 
-  // Auto-scroll log
   useEffect(() => {
     logsEnd.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
 
-  // Start job when modal opens
   useEffect(() => {
     if (!isOpen) return;
     setLogs([]);
@@ -50,7 +52,6 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
     return () => { cancelled = true; };
   }, [isOpen]);
 
-  // Close EventSource on unmount
   useEffect(() => () => esRef.current?.close(), []);
 
   function openStream(jid) {
@@ -76,11 +77,10 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
 
     es.onerror = () => {
       es.close();
-      // SSE dropped — poll status endpoint as fallback
       const poll = setInterval(async () => {
         try {
           const r = await fetch(`/api/stats/status/${jid}`);
-          if (!r.ok) { clearInterval(poll); setIsDone(true); return; } // job gone, allow download
+          if (!r.ok) { clearInterval(poll); setIsDone(true); return; }
           const data = await r.json();
           if (data.status === 'done' || data.status === 'cancelled') {
             clearInterval(poll);
@@ -138,106 +138,161 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
 
   const profileList = Object.entries(progress);
   const logCount = logs.filter(l => !l.isError).length;
+  const restrictedCount = logs.filter(l => !l.isError && l.restricted).length;
+  const totalVideos = profileList.reduce((sum, [, p]) => sum + (p.total || 0), 0);
+  const doneVideos = profileList.reduce((sum, [, p]) => sum + (p.done || 0), 0);
+  const allProfilesDone = profileList.length > 0 && profileList.every(([, p]) => p.done >= p.total && p.total > 0);
+
+  const getStatus = (p) => {
+    if (p.total > 0 && p.done >= p.total) return 'done';
+    if (p.total === 0 && isDone) return 'done';
+    if (p.done > 0 || p.total > 0) return 'running';
+    return 'running';
+  };
 
   return (
     <div className="modal-backdrop" onClick={handleClose}>
       <div
         className="glass modal-card"
-        style={{ maxWidth: '640px', width: '100%' }}
+        style={{ maxWidth: '680px', width: '100%' }}
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
+        {/* ── Header ── */}
         <div className="modal-header">
-          <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: 0, fontSize: '1.1rem' }}>
-            <BarChart2 size={20} />
+          <h2>
+            <BarChart2 size={20} color="var(--primary)" />
             Thống kê video TikTok
           </h2>
           <button className="modal-close" onClick={handleClose}>
-            <X size={18} />
+            <X size={16} />
           </button>
         </div>
 
-        {/* Body */}
-        <div style={{ padding: '0 0 8px' }}>
-          {isStarting && (
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Đang khởi động job...</p>
-          )}
+        {/* ── Body ── */}
+        <div className="modal-body modal-scroll">
+          {/* Error banner */}
           {error && (
-            <p style={{ color: 'var(--danger, #ef4444)', fontSize: '0.9rem' }}>Lỗi: {error}</p>
+            <div className="stats-error-banner">
+              <AlertCircle size={16} />
+              {error}
+            </div>
           )}
 
-          {/* Progress bars per profile */}
-          {profileList.map(([pid, p]) => (
-            <div key={pid} style={{ marginBottom: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', marginBottom: '3px' }}>
-                <span style={{ fontWeight: 600 }}>{p.name}</span>
-                <span style={{ color: 'var(--text-muted)' }}>{p.done} / {p.total} video</span>
+          {/* Starting state */}
+          {isStarting && profileList.length === 0 && (
+            <div className="stats-empty-state">
+              <Loader2 size={28} className="stats-spinner" color="var(--primary)" />
+              <span>Đang khởi động trình thống kê...</span>
+            </div>
+          )}
+
+          {/* Summary cards */}
+          {(logCount > 0 || totalVideos > 0) && (
+            <div className="stats-summary">
+              <div className="stats-summary-card">
+                <div className="stats-summary-value">{logCount || doneVideos}</div>
+                <div className="stats-summary-label">
+                  <Video size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
+                  Video đã quét
+                </div>
               </div>
-              <div style={{ background: 'var(--surface-1)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
-                <div style={{
-                  background: 'var(--primary, #6366f1)',
-                  height: '100%',
-                  width: p.total > 0 ? `${Math.round((p.done / p.total) * 100)}%` : '0%',
-                  transition: 'width 0.3s ease',
-                }} />
+              <div className="stats-summary-card">
+                <div className="stats-summary-value">{restrictedCount}</div>
+                <div className="stats-summary-label">
+                  <Flag size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
+                  Bị hạn chế
+                </div>
+              </div>
+              <div className="stats-summary-card">
+                <div className="stats-summary-value">{profileList.length}</div>
+                <div className="stats-summary-label">
+                  <Hash size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
+                  Profile
+                </div>
               </div>
             </div>
-          ))}
+          )}
+
+          {/* Per-profile progress cards */}
+          {profileList.map(([pid, p]) => {
+            const status = getStatus(p);
+            const pct = p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+            return (
+              <div key={pid} className={`stats-profile-card ${status}`}>
+                <div className="stats-profile-header">
+                  <span className="stats-profile-name">
+                    {status === 'done'
+                      ? <CheckCircle2 size={15} color="var(--success)" />
+                      : <Loader2 size={15} className="stats-spinner" color="var(--primary)" />
+                    }
+                    {p.name}
+                  </span>
+                  <span className={`stats-profile-status ${status}`}>
+                    {status === 'done' ? 'Hoàn thành' : 'Đang quét...'}
+                  </span>
+                </div>
+                <div className="stats-progress-bar">
+                  <div
+                    className="stats-progress-fill"
+                    style={{ width: `${p.total > 0 ? pct : (status === 'done' ? 100 : 0)}%` }}
+                  />
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5 }}>
+                  <span className="stats-progress-count">
+                    {p.done}{p.total > 0 && ` / ${p.total} video`}
+                  </span>
+                  {p.total > 0 && (
+                    <span className="stats-progress-count">{pct}%</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
 
           {/* Log panel */}
-          <div style={{
-            marginTop: '10px',
-            maxHeight: '260px',
-            overflowY: 'auto',
-            background: 'var(--input-bg)',
-            border: '1px solid var(--border)',
-            borderRadius: '8px',
-            padding: '10px',
-            fontSize: '0.78rem',
-            fontFamily: 'monospace',
-            color: 'var(--text)',
-          }}>
-            {logs.length === 0 && !isStarting && (
-              <p style={{ color: 'var(--text-muted)', textAlign: 'center', margin: 0 }}>
-                Đang chờ dữ liệu...
-              </p>
-            )}
-            {logs.map((log, i) => (
-              <div
-                key={i}
-                style={{
-                  padding: '2px 0',
-                  borderBottom: '1px solid var(--border, #ddd)',
-                  color: log.isError
-                    ? 'var(--danger, #ef4444)'
-                    : log.restricted
-                      ? '#ef4444'
-                      : 'var(--text)',
-                }}
-              >
-                {log.isError
-                  ? `[ERROR] ${log.message}`
-                  : `${log.date} | ${log.views} views${log.restricted ? ' | 🚫 RESTRICTED' : ''}`
-                }
+          {logs.length > 0 && (
+            <div className="stats-log-panel">
+              {/* Header row */}
+              <div className="stats-log-row" style={{ background: 'rgba(255,255,255,0.03)', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
+                <span style={{ minWidth: 90 }}>Ngày đăng</span>
+                <span style={{ textAlign: 'right' }}>Lượt xem</span>
+                <span style={{ textAlign: 'center', minWidth: 90 }}>Trạng thái</span>
               </div>
-            ))}
-            <div ref={logsEnd} />
-          </div>
+              {logs.map((log, i) => (
+                <div key={i} className="stats-log-row">
+                  <span className="stats-log-date">{log.date || '—'}</span>
+                  <span className="stats-log-views">{log.views?.toLocaleString() || 0}</span>
+                  {log.isError ? (
+                    <span className="stats-log-badge restricted">Lỗi</span>
+                  ) : log.restricted ? (
+                    <span className="stats-log-badge restricted">Hạn chế</span>
+                  ) : (
+                    <span className="stats-log-badge ok">OK</span>
+                  )}
+                </div>
+              ))}
+              <div ref={logsEnd} />
+            </div>
+          )}
 
-          {isDone && (
-            <p style={{
-              marginTop: '12px',
-              color: 'var(--success, #22c55e)',
-              fontWeight: 600,
-              textAlign: 'center',
-              fontSize: '0.9rem',
-            }}>
-              Hoàn thành! {logCount} video đã thống kê.
-            </p>
+          {/* Empty log — waiting */}
+          {logs.length === 0 && !isStarting && profileList.length > 0 && (
+            <div className="stats-empty-state" style={{ padding: '20px' }}>
+              <Loader2 size={22} className="stats-spinner" color="var(--primary)" />
+              <span style={{ fontSize: '0.82rem' }}>Đang thu thập dữ liệu video...</span>
+            </div>
+          )}
+
+          {/* Done banner */}
+          {(isDone || allProfilesDone) && logCount > 0 && (
+            <div className="stats-done-banner">
+              <CheckCircle2 size={18} />
+              Hoàn thành! {logCount} video đã được thống kê từ {profileList.length} profile.
+            </div>
           )}
         </div>
 
-        {/* Footer */}
+        {/* ── Footer ── */}
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={handleClose}>
             <StopCircle size={14} />
@@ -246,10 +301,15 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
           <button
             className="btn btn-primary"
             onClick={handleDownload}
-            disabled={(!isDone && logCount === 0) || !jobId || isDownloading}
+            disabled={!isDone || !jobId || isDownloading}
+            style={{ gap: 8 }}
           >
-            <Download size={14} />
-            {isDownloading ? 'Đang tải file...' : 'Download Excel'}
+            {isDownloading ? (
+              <Loader2 size={14} className="stats-spinner" />
+            ) : (
+              <FileSpreadsheet size={14} />
+            )}
+            {isDownloading ? 'Đang tải...' : 'Tải Excel'}
           </button>
         </div>
       </div>
