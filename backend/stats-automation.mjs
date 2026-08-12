@@ -120,21 +120,13 @@ export async function runStatsForProfile(profile, jobId, ctx) {
           { timeout: 15000 }
         );
       } catch {
-        log(`Table rows not found. Ending scan.`);
+        const currentUrl = page.url();
+        log(`Table rows not found (url=${currentUrl}). Ending scan. Processed: ${processedCount}, seenKeys: ${seenVideoKeys.size}`);
         break;
       }
 
       // Find the first unvisited row in DOM
       const nextRow = await page.evaluate(({ rowSel, seenKeys }) => {
-        let container = null, bestArea = 0;
-        document.querySelectorAll('*').forEach(el => {
-          const s = window.getComputedStyle(el);
-          if (['auto', 'scroll'].includes(s.overflow) || ['auto', 'scroll'].includes(s.overflowY)) {
-            const area = el.clientWidth * el.clientHeight;
-            if (el.scrollHeight > el.clientHeight + 100 && area > bestArea) { container = el; bestArea = area; }
-          }
-        });
-
         let rows = Array.from(document.querySelectorAll(rowSel));
         if (rows.length === 0) {
           rows = Array.from(document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]'));
@@ -146,15 +138,24 @@ export async function runStatsForProfile(profile, jobId, ctx) {
           const row = rows[i];
           const dateEl = row.querySelector('[data-tt="components_PublishStageLabel_TUXText"], [data-tt*="PublishStageLabel"]');
           const viewsEl = row.querySelector('[data-tt="components_ItemRow_TUXText"], [data-tt*="ItemRow"]');
-          const linkEl = row.querySelector('[data-tt="components_PostInfoCell_a"], a[href*="/video/"]');
+
+          // Search broadly for a video link — try link selectors, then any <a> with a numeric ID in href
+          let linkEl = row.querySelector('a[href*="/video/"]') ||
+                       row.querySelector('[data-tt="components_PostInfoCell_a"]') ||
+                       row.querySelector('a[href*="tiktok.com"]');
+          if (!linkEl) {
+            const allLinks = row.querySelectorAll('a');
+            for (const a of allLinks) {
+              if (/\/video\/\d+/.test(a.getAttribute('href') || '')) { linkEl = a; break; }
+            }
+          }
 
           const videoId = linkEl?.getAttribute('href')?.match(/\/video\/(\d+)/)?.[1] ?? '';
           const dateRaw = dateEl?.textContent?.trim() ?? '';
           const views = parseInt(viewsEl?.textContent?.replace(/,/g, '') ?? '0') || 0;
-          const key = videoId || (dateRaw ? `${dateRaw}_${views}` : `row_${i}`);
+          const key = videoId || (dateRaw ? `${dateRaw}_${views}_${i}` : `row_${i}`);
 
           if (!seenSet.has(key)) {
-            // Scroll row into center view so action buttons are accessible
             row.scrollIntoView({ block: 'center', behavior: 'instant' });
             const rect = row.getBoundingClientRect();
             return {
@@ -169,39 +170,38 @@ export async function runStatsForProfile(profile, jobId, ctx) {
           }
         }
 
-        // All visible rows in DOM are already processed. Scroll container down to load more virtual rows
-        let scrolled = false;
-        if (container) {
-          const maxScroll = container.scrollHeight - container.clientHeight;
-          if (container.scrollTop < maxScroll - 10) {
-            container.scrollTop += 450;
-            scrolled = true;
-          }
-        } else {
-          const prevY = window.scrollY;
-          window.scrollBy(0, 450);
-          if (window.scrollY > prevY) scrolled = true;
-        }
-
-        return { found: false, scrolled, totalDOMRows: rows.length };
+        return { found: false, totalDOMRows: rows.length };
       }, { rowSel: ROW_SEL, seenKeys: Array.from(seenVideoKeys) });
 
       if (!nextRow.found) {
-        if (nextRow.scrolled) {
-          log(`Scrolled down to load next batch of virtual rows...`);
-          await page.waitForTimeout(1200);
+        // TikTok Studio uses overflow:hidden virtual scroll — DOM scroll methods have no effect.
+        // Only native OS-level wheel events (via CDP) trigger the virtual scroll handler.
+        const wheelDelta = consecutiveNoNewVideos === 0 ? -600 : -900;
+        await page.mouse.wheel(0, wheelDelta);
+        await page.waitForTimeout(1500);
+
+        const rowCountAfterWheel = await page.evaluate((sel) => {
+          let rows = document.querySelectorAll(sel);
+          if (rows.length === 0) {
+            rows = document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]');
+          }
+          return rows.length;
+        }, ROW_SEL);
+
+        if (rowCountAfterWheel > nextRow.totalDOMRows) {
+          log(`Wheel scroll loaded more rows: ${nextRow.totalDOMRows} → ${rowCountAfterWheel}`);
           consecutiveNoNewVideos = 0;
           continue;
-        } else {
-          consecutiveNoNewVideos++;
-          log(`No new unvisited video rows in DOM (attempt ${consecutiveNoNewVideos}/2).`);
-          if (consecutiveNoNewVideos >= 2) {
-            log(`Finished scanning all videos! Total unique videos: ${processedCount}`);
-            break;
-          }
-          await page.waitForTimeout(1000);
-          continue;
         }
+
+        consecutiveNoNewVideos++;
+        log(`No new rows after wheel scroll (attempt ${consecutiveNoNewVideos}/2). totalDOMRows=${nextRow.totalDOMRows} seenKeys=${seenVideoKeys.size}`);
+        if (consecutiveNoNewVideos >= 2) {
+          log(`Finished scanning all videos! Total scanned: ${processedCount}, unique keys: ${seenVideoKeys.size}`);
+          break;
+        }
+        await page.waitForTimeout(1000);
+        continue;
       }
 
       consecutiveNoNewVideos = 0;
@@ -249,6 +249,11 @@ export async function runStatsForProfile(profile, jobId, ctx) {
         continue;
       }
 
+      // Extract videoId from analytics URL: .../tiktokstudio/analytics/7673006199935175966
+      const urlVideoId = (page.url().match(/\/analytics\/(\d+)/) || [])[1] || '';
+      const videoId = nextRow.videoId || urlVideoId;
+      if (urlVideoId && !seenVideoKeys.has(urlVideoId)) seenVideoKeys.add(urlVideoId);
+
       // Wait for analytics page content to fully render (works for both restricted and normal videos)
       try {
         await page.waitForSelector('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]', { timeout: 8000 });
@@ -283,10 +288,10 @@ export async function runStatsForProfile(profile, jobId, ctx) {
       const views = analyticsData.views || nextRow.views;
 
       processedCount++;
-      log(`Video ${processedCount} [${nextRow.videoKey}]: date=${date} views=${views} restricted=${restricted}`);
+      log(`Video ${processedCount} [${videoId || nextRow.videoKey}]: date=${date} views=${views} restricted=${restricted}`);
 
       const result = {
-        title: nextRow.videoId ? `Video ${nextRow.videoId}` : `Video ${processedCount}`,
+        title: videoId ? `Video ${videoId}` : `Video ${processedCount}`,
         date,
         views,
         restricted,
