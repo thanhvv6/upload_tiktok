@@ -92,7 +92,7 @@ export async function runStatsForProfile(profile, jobId, ctx) {
       return;
     }
 
-    log('Starting element-index based scan for all videos...');
+    log('Starting full scan for all videos...');
     pushEvent(jobId, {
       type: 'progress',
       profileId: profile.id,
@@ -104,12 +104,10 @@ export async function runStatsForProfile(profile, jobId, ctx) {
     let processedCount = 0;
     const seenVideoKeys = new Set();
     const MAX_SAFETY_LIMIT = 2000;
-    let rowIndex = 0;
+    let consecutiveNoNewVideos = 0;
 
     for (let loop = 0; loop < MAX_SAFETY_LIMIT; loop++) {
       if (isAborted(jobId)) break;
-
-      log(`Scanning video row index ${rowIndex}...`);
 
       // Return to content page if needed
       await ensureContentPage(page, log);
@@ -122,12 +120,12 @@ export async function runStatsForProfile(profile, jobId, ctx) {
           { timeout: 15000 }
         );
       } catch {
-        log(`Row index ${rowIndex}: table rows not found. Ending scan.`);
+        log(`Table rows not found. Ending scan.`);
         break;
       }
 
-      // Query row at index `rowIndex`
-      let evalResult = await page.evaluate(({ rowSel, idx }) => {
+      // Find the first unvisited row in DOM
+      const nextRow = await page.evaluate(({ rowSel, seenKeys }) => {
         let container = null, bestArea = 0;
         document.querySelectorAll('*').forEach(el => {
           const s = window.getComputedStyle(el);
@@ -142,123 +140,86 @@ export async function runStatsForProfile(profile, jobId, ctx) {
           rows = Array.from(document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]'));
         }
 
-        if (idx >= rows.length) {
-          // Scroll container to trigger virtual rendering if there are more rows
-          if (container) container.scrollTop += 500;
-          return { videoData: null, totalRowsInDOM: rows.length };
-        }
+        const seenSet = new Set(seenKeys);
 
-        const row = rows[idx];
-        row.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-
-        const dateEl = row.querySelector('[data-tt="components_PublishStageLabel_TUXText"], [data-tt*="PublishStageLabel"]');
-        const viewsEl = row.querySelector('[data-tt="components_ItemRow_TUXText"], [data-tt*="ItemRow"]');
-        const linkEl = row.querySelector('[data-tt="components_PostInfoCell_a"], a[href*="/video/"]');
-
-        let chartBtn = null;
-        for (const c of row.querySelectorAll('[data-tt="components_ActionCell_Container"], [class*="ActionCell"], div, button, a')) {
-          if (c.querySelector('[data-icon="ChartRise"], svg[class*="ChartRise"], [data-icon*="Chart"]')) { chartBtn = c; break; }
-        }
-        if (!chartBtn && row.querySelector('[data-icon="ChartRise"]')) {
-          chartBtn = row.querySelector('[data-icon="ChartRise"]');
-        }
-
-        if (!chartBtn) {
-          return { videoData: null, totalRowsInDOM: rows.length };
-        }
-
-        const chartRect = chartBtn.getBoundingClientRect();
-        return {
-          videoData: {
-            dateRaw: dateEl?.textContent?.trim() ?? '',
-            views: parseInt(viewsEl?.textContent?.replace(/,/g, '') ?? '0') || 0,
-            videoId: linkEl?.getAttribute('href')?.match(/\/video\/(\d+)/)?.[1] ?? '',
-            clickPos: { cx: chartRect.x + chartRect.width / 2, cy: chartRect.y + chartRect.height / 2 },
-          },
-          totalRowsInDOM: rows.length
-        };
-      }, { rowSel: ROW_SEL, idx: rowIndex });
-
-      // If idx >= totalRowsInDOM, we scrolled container down to see if more rows render
-      if (!evalResult.videoData) {
-        await page.waitForTimeout(1500);
-        evalResult = await page.evaluate(({ rowSel, idx }) => {
-          let rows = Array.from(document.querySelectorAll(rowSel));
-          if (rows.length === 0) {
-            rows = Array.from(document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]'));
-          }
-
-          if (idx >= rows.length) {
-            return { videoData: null, totalRowsInDOM: rows.length };
-          }
-
-          const row = rows[idx];
-          row.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
           const dateEl = row.querySelector('[data-tt="components_PublishStageLabel_TUXText"], [data-tt*="PublishStageLabel"]');
           const viewsEl = row.querySelector('[data-tt="components_ItemRow_TUXText"], [data-tt*="ItemRow"]');
           const linkEl = row.querySelector('[data-tt="components_PostInfoCell_a"], a[href*="/video/"]');
 
-          let chartBtn = null;
-          for (const c of row.querySelectorAll('[data-tt="components_ActionCell_Container"], [class*="ActionCell"], div, button, a')) {
-            if (c.querySelector('[data-icon="ChartRise"], svg[class*="ChartRise"], [data-icon*="Chart"]')) { chartBtn = c; break; }
+          const videoId = linkEl?.getAttribute('href')?.match(/\/video\/(\d+)/)?.[1] ?? '';
+          const dateRaw = dateEl?.textContent?.trim() ?? '';
+          const views = parseInt(viewsEl?.textContent?.replace(/,/g, '') ?? '0') || 0;
+          const key = videoId || (dateRaw ? `${dateRaw}_${views}` : `row_${i}`);
+
+          if (!seenSet.has(key)) {
+            // Scroll row into center view so action buttons are accessible
+            row.scrollIntoView({ block: 'center', behavior: 'instant' });
+            const rect = row.getBoundingClientRect();
+            return {
+              found: true,
+              domIndex: i,
+              videoKey: key,
+              dateRaw,
+              views,
+              videoId,
+              rowCenter: { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2 }
+            };
           }
-          if (!chartBtn && row.querySelector('[data-icon="ChartRise"]')) {
-            chartBtn = row.querySelector('[data-icon="ChartRise"]');
+        }
+
+        // All visible rows in DOM are already processed. Scroll container down to load more virtual rows
+        let scrolled = false;
+        if (container) {
+          const maxScroll = container.scrollHeight - container.clientHeight;
+          if (container.scrollTop < maxScroll - 10) {
+            container.scrollTop += 450;
+            scrolled = true;
           }
+        } else {
+          const prevY = window.scrollY;
+          window.scrollBy(0, 450);
+          if (window.scrollY > prevY) scrolled = true;
+        }
 
-          if (!chartBtn) return { videoData: null, totalRowsInDOM: rows.length };
+        return { found: false, scrolled, totalDOMRows: rows.length };
+      }, { rowSel: ROW_SEL, seenKeys: Array.from(seenVideoKeys) });
 
-          const chartRect = chartBtn.getBoundingClientRect();
-          return {
-            videoData: {
-              dateRaw: dateEl?.textContent?.trim() ?? '',
-              views: parseInt(viewsEl?.textContent?.replace(/,/g, '') ?? '0') || 0,
-              videoId: linkEl?.getAttribute('href')?.match(/\/video\/(\d+)/)?.[1] ?? '',
-              clickPos: { cx: chartRect.x + chartRect.width / 2, cy: chartRect.y + chartRect.height / 2 },
-            },
-            totalRowsInDOM: rows.length
-          };
-        }, { rowSel: ROW_SEL, idx: rowIndex });
+      if (!nextRow.found) {
+        if (nextRow.scrolled) {
+          log(`Scrolled down to load next batch of virtual rows...`);
+          await page.waitForTimeout(1200);
+          consecutiveNoNewVideos = 0;
+          continue;
+        } else {
+          consecutiveNoNewVideos++;
+          log(`No new unvisited video rows in DOM (attempt ${consecutiveNoNewVideos}/2).`);
+          if (consecutiveNoNewVideos >= 2) {
+            log(`Finished scanning all videos! Total unique videos: ${processedCount}`);
+            break;
+          }
+          await page.waitForTimeout(1000);
+          continue;
+        }
       }
 
-      const { videoData } = evalResult;
-
-      if (!videoData) {
-        log(`No more video rows found at index ${rowIndex}. Finished scanning all ${processedCount} videos!`);
-        break;
-      }
-
-      const videoKey = videoData.videoId || `${videoData.dateRaw}_${videoData.views}_${rowIndex}`;
-      if (seenVideoKeys.has(videoKey)) {
-        log(`Video [${videoKey}] already scanned. Moving to next index...`);
-        rowIndex++;
-        continue;
-      }
-      seenVideoKeys.add(videoKey);
+      consecutiveNoNewVideos = 0;
+      seenVideoKeys.add(nextRow.videoKey);
+      log(`Scanning video ${processedCount + 1} [${nextRow.videoKey}]...`);
 
       // Step 1: Hover over the row to trigger CSS :hover and reveal hidden action buttons
-      const rowCenterResult = await page.evaluate(({ rowSel, idx }) => {
-        const rows = Array.from(document.querySelectorAll(rowSel));
-        if (idx >= rows.length) return null;
-        const rect = rows[idx].getBoundingClientRect();
-        return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2 };
-      }, { rowSel: ROW_SEL, idx: rowIndex });
+      await page.mouse.move(nextRow.rowCenter.cx, nextRow.rowCenter.cy);
+      await page.waitForTimeout(400);
 
-      if (rowCenterResult) {
-        await page.mouse.move(rowCenterResult.cx, rowCenterResult.cy);
-        await page.waitForTimeout(400); // wait for :hover to reveal buttons
-      }
-
-      // Step 2: Re-fetch ChartRise button position (now visible after hover)
-      const chartPos = await page.evaluate(({ rowSel, idx }) => {
-        const rows = Array.from(document.querySelectorAll(rowSel));
-        if (idx >= rows.length) return null;
-        const row = rows[idx];
-        // Find ChartRise icon
-        const icon = row.querySelector('[data-icon="ChartRise"]');
+      // Step 2: Re-fetch ChartRise button position
+      const chartPos = await page.evaluate(({ rowSel, domIdx }) => {
+        let rows = Array.from(document.querySelectorAll(rowSel));
+        if (rows.length === 0) rows = Array.from(document.querySelectorAll('[data-tt*="PostTable"], [class*="ItemRow"], [class*="PostTable"]'));
+        const row = rows[domIdx];
+        if (!row) return null;
+        const icon = row.querySelector('[data-icon="ChartRise"], svg[class*="ChartRise"], [data-icon*="Chart"]');
         if (!icon) return null;
-        // Walk up to clickable container
         let btn = icon;
         while (btn && btn !== row) {
           if (btn.tagName === 'BUTTON' || btn.tagName === 'A' || btn.getAttribute('role') === 'button') break;
@@ -268,11 +229,10 @@ export async function runStatsForProfile(profile, jobId, ctx) {
         const rect = btn.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return null;
         return { cx: rect.x + rect.width / 2, cy: rect.y + rect.height / 2 };
-      }, { rowSel: ROW_SEL, idx: rowIndex });
+      }, { rowSel: ROW_SEL, domIdx: nextRow.domIndex });
 
       if (!chartPos) {
-        log(`Video row ${rowIndex}: ChartRise button not visible after hover, skipping`);
-        rowIndex++;
+        log(`Video [${nextRow.videoKey}]: ChartRise button not visible after hover, skipping`);
         continue;
       }
 
@@ -285,8 +245,7 @@ export async function runStatsForProfile(profile, jobId, ctx) {
       try {
         await page.waitForURL('**/analytics**', { timeout: 8000 });
       } catch {
-        log(`Video row ${rowIndex}: analytics page not reached after click (url=${page.url()}), skipping`);
-        rowIndex++;
+        log(`Video [${nextRow.videoKey}]: analytics page not reached after click (url=${page.url()}), skipping`);
         continue;
       }
 
@@ -294,7 +253,7 @@ export async function runStatsForProfile(profile, jobId, ctx) {
       try {
         await page.waitForSelector('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]', { timeout: 8000 });
       } catch {
-        log(`Video row ${rowIndex}: analytics content not loaded yet, extracting anyway...`);
+        log(`Video [${nextRow.videoKey}]: analytics content not loaded yet, extracting anyway...`);
       }
 
       // Check restriction banner AFTER page has rendered
@@ -320,17 +279,14 @@ export async function runStatsForProfile(profile, jobId, ctx) {
         return { date: dateMatch ? dateMatch[1] : null, views, allValues, elCount: viewEls.length };
       });
 
-      log(`Analytics page: found ${analyticsData.elCount} view elements, values=[${analyticsData.allValues.join(',')}], views=${analyticsData.views}`);
-
-      const date = analyticsData.date ?? parseContentDate(videoData.dateRaw);
-      const views = analyticsData.views || videoData.views;
-
+      const date = analyticsData.date ?? parseContentDate(nextRow.dateRaw);
+      const views = analyticsData.views || nextRow.views;
 
       processedCount++;
-      log(`Video ${processedCount} (Row ${rowIndex}): date=${date} views=${views} restricted=${restricted}`);
+      log(`Video ${processedCount} [${nextRow.videoKey}]: date=${date} views=${views} restricted=${restricted}`);
 
       const result = {
-        title: videoData.videoId ? `Video ${videoData.videoId}` : `Video ${processedCount}`,
+        title: nextRow.videoId ? `Video ${nextRow.videoId}` : `Video ${processedCount}`,
         date,
         views,
         restricted,
@@ -345,9 +301,6 @@ export async function runStatsForProfile(profile, jobId, ctx) {
         done: processedCount,
         total: processedCount,
       });
-
-      // Advance to next row index
-      rowIndex++;
     }
 
     // Push final progress update matching exact processed count
