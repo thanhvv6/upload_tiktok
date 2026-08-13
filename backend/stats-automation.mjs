@@ -103,14 +103,20 @@ export async function runStatsForProfile(profile, jobId, ctx) {
 
       // Extract date and views
       const analyticsData = await page.evaluate(() => {
+        const parseViews = (raw) => {
+          const match = String(raw || '').trim().replace(/,/g, '').match(/^([\d.]+)\s*([KMB])?/i);
+          if (!match) return NaN;
+          const mult = { k: 1e3, m: 1e6, b: 1e9 }[match[2]?.toLowerCase()] || 1;
+          return parseFloat(match[1]) * mult;
+        };
+
         const bodyText = document.body.innerText || '';
         const dateMatch = bodyText.match(/Posted on (\d{1,2}\/\d{1,2}\/\d{4})/);
 
         const viewEls = document.querySelectorAll('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]');
         let views = 0;
         for (const el of viewEls) {
-          const text = el.textContent?.trim().replace(/,/g, '');
-          const num = parseInt(text);
+          const num = parseViews(el.textContent);
           if (!isNaN(num) && num > 0) { views = num; break; }
         }
 
