@@ -21,9 +21,15 @@ import {
     listGroups,
     createGroup,
     deleteGroup,
-    assertGroupExists
+    assertGroupExists,
+    getGroupById
 } from './group-store.js';
 import { renameGroupWithFolder } from './group-rename.js';
+import {
+    resolveProfileFolder,
+    resolveDeletableVideoFolders,
+    syncProfileFolderOnGroupChange
+} from './profile-folder.js';
 import { createProfileRecord } from './profile-store.js';
 import { getFolderVideoStatus } from './video-folder-status.js';
 import {
@@ -506,17 +512,38 @@ app.post('/api/profiles', (req, res) => {
 
     try {
         const id = Date.now().toString();
+
+        // No folder picked by hand -> fall back to the uploads/<group>/<profile>
+        // layout the CSV and folder importers already use. The mkdir waits until
+        // the row is in, so a rejected profile leaves no stray folder behind.
+        let resolvedVideoFolder = video_folder;
+        if (!resolvedVideoFolder || String(resolvedVideoFolder).trim() === '') {
+            const groupId = normalizeGroupId(group_id);
+            if (groupId) assertGroupExists(db, groupId);
+            const profileName = typeof name === 'string' ? name.trim() : '';
+            if (profileName) {
+                resolvedVideoFolder = resolveProfileFolder(
+                    UPLOADS_DIR,
+                    groupId ? getGroupById(db, groupId).name : null,
+                    profileName
+                );
+            }
+        }
+
         const profile = createProfileRecord(db, {
             id,
             name,
             group_id,
-            video_folder,
+            video_folder: resolvedVideoFolder,
             channel_ids,
             need_content_check,
             render_video_long,
             set_music,
             render_concat_video
         });
+        if (profile.video_folder) {
+            fs.mkdirSync(profile.video_folder, { recursive: true });
+        }
         res.json(profile);
     } catch (err) {
         res.status(err.status || 400).json({
@@ -648,9 +675,7 @@ app.post('/api/profiles/import-csv', (req, res) => {
 
             const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
 
-            const videoFolder = groupName
-                ? path.join(UPLOADS_DIR, groupName, profileName)
-                : path.join(UPLOADS_DIR, profileName);
+            const videoFolder = resolveProfileFolder(UPLOADS_DIR, groupName, profileName);
 
             try {
                 if (videoFolder) {
@@ -767,9 +792,7 @@ app.post('/api/profiles/import-folder', (req, res) => {
             const proxy = (account.proxy || '').trim() || null;
             const id = Date.now().toString() + '_' + Math.random().toString(36).slice(2, 8);
 
-            const videoFolder = groupName
-                ? path.join(UPLOADS_DIR, groupName, profileName)
-                : path.join(UPLOADS_DIR, profileName);
+            const videoFolder = resolveProfileFolder(UPLOADS_DIR, groupName, profileName);
 
             try {
                 if (videoFolder) {
@@ -1008,39 +1031,14 @@ app.delete('/api/profiles/:id', async (req, res) => {
                 }
             }
 
-            // 3. Delete video upload folder (from DB field)
-            const videoFolder = profile.video_folder;
-            if (videoFolder && fs.existsSync(videoFolder) && videoFolder !== UPLOADS_DIR && videoFolder.length > 5) {
+            // 3. Delete the video upload folders that belong to this profile
+            // only -- never a group folder, never one holding another profile.
+            for (const folder of resolveDeletableVideoFolders(db, { profile, uploadsDir: UPLOADS_DIR })) {
                 try {
-                    fs.rmSync(videoFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-                    console.log(`[System] Deleted video upload folder from DB: ${videoFolder}`);
+                    fs.rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+                    console.log(`[System] Deleted video upload folder: ${folder}`);
                 } catch (err) {
-                    console.error(`[System] Error deleting video folder from DB: ${err.message}`);
-                }
-            }
-
-            // 4. Also delete folder in uploads matching profile name (if it exists)
-            const uploadsProfileFolder = path.join(UPLOADS_DIR, profile.name);
-            if (fs.existsSync(uploadsProfileFolder) && uploadsProfileFolder !== UPLOADS_DIR && profile.name.length > 0) {
-                try {
-                    fs.rmSync(uploadsProfileFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-                    console.log(`[System] Deleted video upload folder matching profile name: ${uploadsProfileFolder}`);
-                } catch (err) {
-                    console.error(`[System] Error deleting video upload folder matching profile name: ${err.message}`);
-                }
-            }
-
-            // 5. Also delete folder in uploads matching normalized/lowercase profile name (if it exists)
-            const normalizedName = profile.name.toLowerCase().replace(/\s+/g, '');
-            if (normalizedName) {
-                const uploadsNormalizedFolder = path.join(UPLOADS_DIR, normalizedName);
-                if (fs.existsSync(uploadsNormalizedFolder) && uploadsNormalizedFolder !== UPLOADS_DIR && normalizedName.length > 0) {
-                    try {
-                        fs.rmSync(uploadsNormalizedFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-                        console.log(`[System] Deleted video upload folder matching normalized name: ${uploadsNormalizedFolder}`);
-                    } catch (err) {
-                        console.error(`[System] Error deleting video upload folder matching normalized name: ${err.message}`);
-                    }
+                    console.error(`[System] Error deleting video upload folder ${folder}: ${err.message}`);
                 }
             }
         }
@@ -1099,39 +1097,14 @@ app.post('/api/profiles/delete-multiple', async (req, res) => {
                     }
                 }
 
-                // 3. Delete video upload folder (from DB field)
-                const videoFolder = profile.video_folder;
-                if (videoFolder && fs.existsSync(videoFolder) && videoFolder !== UPLOADS_DIR && videoFolder.length > 5) {
+                // 3. Delete the video upload folders that belong to this profile
+                // only -- never a group folder, never one holding another profile.
+                for (const folder of resolveDeletableVideoFolders(db, { profile, uploadsDir: UPLOADS_DIR })) {
                     try {
-                        fs.rmSync(videoFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-                        console.log(`[System] Deleted video upload folder from DB: ${videoFolder}`);
+                        fs.rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+                        console.log(`[System] Deleted video upload folder: ${folder}`);
                     } catch (err) {
-                        console.error(`[System] Error deleting video folder from DB: ${err.message}`);
-                    }
-                }
-
-                // 4. Also delete folder in uploads matching profile name (if it exists)
-                const uploadsProfileFolder = path.join(UPLOADS_DIR, profile.name);
-                if (fs.existsSync(uploadsProfileFolder) && uploadsProfileFolder !== UPLOADS_DIR && profile.name.length > 0) {
-                    try {
-                        fs.rmSync(uploadsProfileFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-                        console.log(`[System] Deleted video upload folder matching profile name: ${uploadsProfileFolder}`);
-                    } catch (err) {
-                        console.error(`[System] Error deleting video upload folder matching profile name: ${err.message}`);
-                    }
-                }
-
-                // 5. Also delete folder in uploads matching normalized/lowercase profile name (if it exists)
-                const normalizedName = profile.name.toLowerCase().replace(/\s+/g, '');
-                if (normalizedName) {
-                    const uploadsNormalizedFolder = path.join(UPLOADS_DIR, normalizedName);
-                    if (fs.existsSync(uploadsNormalizedFolder) && uploadsNormalizedFolder !== UPLOADS_DIR && normalizedName.length > 0) {
-                        try {
-                            fs.rmSync(uploadsNormalizedFolder, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-                            console.log(`[System] Deleted video upload folder matching normalized name: ${uploadsNormalizedFolder}`);
-                        } catch (err) {
-                            console.error(`[System] Error deleting video upload folder matching normalized name: ${err.message}`);
-                        }
+                        console.error(`[System] Error deleting video upload folder ${folder}: ${err.message}`);
                     }
                 }
             }
@@ -1371,19 +1344,19 @@ app.patch('/api/profiles/:id', (req, res) => {
     if ('group_id' in req.body) {
         const normalizedGroupId = normalizeGroupId(req.body.group_id);
         if (normalizedGroupId !== undefined) {
-            if (normalizedGroupId !== null) {
-                try {
-                    assertGroupExists(db, normalizedGroupId);
-                } catch (err) {
-                    return res
-                        .status(err.status || 400)
-                        .json({ error: err.message });
-                }
+            try {
+                // Also carries the video folder over to the new group.
+                syncProfileFolderOnGroupChange(db, {
+                    profileId,
+                    groupId: normalizedGroupId,
+                    uploadsDir: UPLOADS_DIR
+                });
+            } catch (err) {
+                console.error('Move profile folder error:', err);
+                return res
+                    .status(err.status || 400)
+                    .json({ error: err.message });
             }
-            db.prepare('UPDATE profiles SET group_id = ? WHERE id = ?').run(
-                normalizedGroupId,
-                profileId
-            );
         }
     }
 
@@ -1487,6 +1460,9 @@ app.post('/api/groups', (req, res) => {
                 ? rawId.trim()
                 : randomUUID();
         createGroup(db, { id, name: req.body.name });
+        fs.mkdirSync(path.join(UPLOADS_DIR, getGroupById(db, id).name), {
+            recursive: true
+        });
         res.json({ success: true, id });
     } catch (err) {
         res.status(err.status || 400).json({ error: err.message });
