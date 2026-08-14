@@ -18,7 +18,7 @@ export function initGroupSchema(db) {
     `);
 }
 
-function normalizeGroupName(name) {
+export function normalizeGroupName(name) {
     if (typeof name !== 'string') {
         throw httpError(400, 'Group name is required');
     }
@@ -26,7 +26,29 @@ function normalizeGroupName(name) {
     if (trimmed.length === 0) {
         throw httpError(400, 'Group name is required');
     }
+    if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) {
+        throw httpError(
+            400,
+            'Group name can only contain letters, numbers, underscores and hyphens (no spaces or accented characters)'
+        );
+    }
     return trimmed;
+}
+
+export function assertGroupNameAvailable(db, name, excludeId) {
+    const conflict =
+        excludeId !== undefined
+            ? db
+                  .prepare(
+                      'SELECT id FROM groups WHERE LOWER(name) = LOWER(?) AND id != ?'
+                  )
+                  .get(name, excludeId)
+            : db
+                  .prepare('SELECT id FROM groups WHERE LOWER(name) = LOWER(?)')
+                  .get(name);
+    if (conflict) {
+        throw httpError(400, 'A group with this name already exists');
+    }
 }
 
 export function getGroupById(db, id) {
@@ -68,12 +90,7 @@ export function createGroup(db, { id, name }) {
         throw httpError(400, 'Group id is required');
     }
     const trimmedName = normalizeGroupName(name);
-    const existingName = db
-        .prepare('SELECT id FROM groups WHERE LOWER(name) = LOWER(?)')
-        .get(trimmedName);
-    if (existingName) {
-        throw httpError(400, 'A group with this name already exists');
-    }
+    assertGroupNameAvailable(db, trimmedName);
     try {
         db.prepare(
             'INSERT INTO groups (id, name) VALUES (?, ?)'
@@ -92,14 +109,7 @@ export function createGroup(db, { id, name }) {
 export function renameGroup(db, { id, name }) {
     assertGroupExists(db, id);
     const trimmedName = normalizeGroupName(name);
-    const conflict = db
-        .prepare(
-            'SELECT id FROM groups WHERE LOWER(name) = LOWER(?) AND id != ?'
-        )
-        .get(trimmedName, id);
-    if (conflict) {
-        throw httpError(400, 'A group with this name already exists');
-    }
+    assertGroupNameAvailable(db, trimmedName, id);
     db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(
         trimmedName,
         id

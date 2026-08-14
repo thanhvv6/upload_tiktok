@@ -20,10 +20,10 @@ import {
     initGroupSchema,
     listGroups,
     createGroup,
-    renameGroup,
     deleteGroup,
     assertGroupExists
 } from './group-store.js';
+import { renameGroupWithFolder } from './group-rename.js';
 import { createProfileRecord } from './profile-store.js';
 import { getFolderVideoStatus } from './video-folder-status.js';
 import {
@@ -1495,7 +1495,11 @@ app.post('/api/groups', (req, res) => {
 
 app.patch('/api/groups/:id', (req, res) => {
     try {
-        renameGroup(db, { id: req.params.id, name: req.body.name });
+        renameGroupWithFolder(db, {
+            id: req.params.id,
+            name: req.body.name,
+            uploadsDir: UPLOADS_DIR
+        });
         res.json({ success: true });
     } catch (err) {
         res.status(err.status || 400).json({ error: err.message });
