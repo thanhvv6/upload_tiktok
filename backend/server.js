@@ -25,6 +25,7 @@ import {
     assertGroupExists
 } from './group-store.js';
 import { createProfileRecord } from './profile-store.js';
+import { getFolderVideoStatus } from './video-folder-status.js';
 import {
   createJob, getJob, addClient, removeClient,
   pushEvent, appendResult, markProfileDone, markError,
@@ -495,7 +496,8 @@ app.get('/api/profiles', (req, res) => {
         .all();
     res.json(profiles.map(p => ({
         ...p,
-        schedules: p.schedules ? p.schedules.split(',') : []
+        schedules: p.schedules ? p.schedules.split(',') : [],
+        ...getFolderVideoStatus(p.video_folder)
     })));
 });
 
@@ -1568,6 +1570,31 @@ app.post('/api/select-folder', (req, res) => {
         const selectedPath = stdout.trim();
         if (!selectedPath) return res.status(500).json({ error: 'No folder selected' });
         res.json({ path: selectedPath });
+    });
+});
+
+app.post('/api/profiles/:id/open-folder', (req, res) => {
+    const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(req.params.id);
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    if (!profile.video_folder) return res.status(400).json({ error: 'not_set' });
+    if (!fs.existsSync(profile.video_folder)) return res.status(400).json({ error: 'missing' });
+
+    const folder = profile.video_folder;
+    let command = '';
+    if (process.platform === 'darwin') {
+        command = `open ${JSON.stringify(folder)}`;
+    } else if (process.platform === 'win32') {
+        command = `explorer ${JSON.stringify(folder)}`;
+    } else {
+        return res.status(501).json({ error: 'Open folder not supported on this platform' });
+    }
+
+    exec(command, (error) => {
+        if (error) {
+            console.error(`Open folder error: ${error.message}`);
+            return res.status(500).json({ error: 'Failed to open folder' });
+        }
+        res.json({ success: true });
     });
 });
 

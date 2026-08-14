@@ -63,6 +63,7 @@ const ProfileCard = React.memo(React.forwardRef(({
   setEditingValue,
   onUpdateName,
   onEdit,
+  onOpenFolder,
   groups
 }, ref) => {
   return (
@@ -172,12 +173,46 @@ const ProfileCard = React.memo(React.forwardRef(({
           </div>
 
           {/* Group */}
-          <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid var(--border)' }}>
-            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: '600' }}>
+          <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+            <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: '600', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {profile.group_id
                 ? (() => { const g = groups.find(gr => gr.id === profile.group_id); return g ? g.name : '—'; })()
                 : 'No group'}
             </span>
+              {(() => {
+                const status = profile.folder_status || 'not_set';
+                const count = profile.video_count || 0;
+                const clickable = status === 'ok';
+                const config = status === 'not_set'
+                  ? { color: 'var(--error)', bg: 'rgba(239, 68, 68, 0.12)', text: 'Chưa set folder' }
+                  : status === 'missing'
+                    ? { color: 'var(--error)', bg: 'rgba(239, 68, 68, 0.12)', text: 'Folder không tồn tại' }
+                    : count > 0
+                      ? { color: 'var(--success)', bg: 'rgba(34, 197, 94, 0.12)', text: `${count} videos` }
+                      : { color: 'var(--text-muted)', bg: 'rgba(148, 163, 184, 0.12)', text: '0 videos' };
+                return (
+                  <div
+                    onClick={clickable ? () => onOpenFolder(profile) : undefined}
+                    title={clickable ? 'Mở folder' : undefined}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '3px 8px',
+                      borderRadius: '999px',
+                      fontSize: '0.65rem',
+                      fontWeight: '600',
+                      color: config.color,
+                      background: config.bg,
+                      cursor: clickable ? 'pointer' : 'default',
+                      userSelect: 'none'
+                    }}
+                  >
+                    <FolderOpen size={11} />
+                    {config.text}
+                  </div>
+                );
+              })()}
           </div>
         </div>
       </div>
@@ -822,6 +857,22 @@ const App = () => {
       setTimeout(() => setMessage(null), 3000);
     } catch (err) {
       setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to open browser' });
+    }
+  };
+
+  const openProfileFolder = async (profile) => {
+    try {
+      await axios.post(`/api/profiles/${profile.id}/open-folder`);
+      setMessage({ type: 'success', text: 'Đã mở folder upload' });
+      setTimeout(() => setMessage(null), 3000);
+    } catch (err) {
+      const code = err.response?.data?.error;
+      const text = code === 'not_set'
+        ? 'Profile chưa set folder upload'
+        : code === 'missing'
+          ? 'Folder upload không tồn tại'
+          : err.response?.data?.error || 'Không thể mở folder';
+      setMessage({ type: 'error', text });
     }
   };
 
@@ -1800,6 +1851,7 @@ const App = () => {
                       onToggleSelected={toggleProfileSelectedForRun}
                       onDelete={deleteProfile}
                       onOpen={openProfile}
+                      onOpenFolder={openProfileFolder}
                       onStart={startAutomation}
                       onEngage={startEngage}
                       onStopEngage={stopEngage}
