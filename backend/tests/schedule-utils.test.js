@@ -26,10 +26,40 @@ test('computeNextScheduledTime increments from previous scheduled slot by 5 minu
     const scheduled = computeNextScheduledTime({
         index: 4,
         lastScheduledTime: previous,
+        intervalMinutes: 5,
         now: new Date('2026-04-12T09:18:25.755Z')
     });
 
     assert.equal(scheduled.toISOString(), '2026-04-12T09:45:00.000Z');
+});
+
+test('computeNextScheduledTime steps by whatever interval it is given', () => {
+    // Locks the plumbing: the scheduled-upload path used to call this without
+    // intervalMinutes, so a profile set to 5 or 15 silently stepped by 10.
+    const previous = new Date('2026-04-12T09:00:00.000Z');
+    const step = (intervalMinutes) =>
+        computeNextScheduledTime({
+            index: 4,
+            lastScheduledTime: previous,
+            intervalMinutes,
+            now: new Date('2026-04-12T08:30:00.000Z')
+        }).toISOString();
+
+    assert.equal(step(5), '2026-04-12T09:05:00.000Z');
+    assert.equal(step(10), '2026-04-12T09:10:00.000Z');
+    assert.equal(step(15), '2026-04-12T09:15:00.000Z');
+});
+
+test('computeNextScheduledTime falls back to 10 minutes when no interval is given', () => {
+    const previous = new Date('2026-04-12T09:00:00.000Z');
+
+    const scheduled = computeNextScheduledTime({
+        index: 4,
+        lastScheduledTime: previous,
+        now: new Date('2026-04-12T08:30:00.000Z')
+    });
+
+    assert.equal(scheduled.toISOString(), '2026-04-12T09:10:00.000Z');
 });
 
 test('inferScheduleFieldKind detects date and time from input hints', () => {

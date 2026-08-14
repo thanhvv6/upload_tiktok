@@ -4615,6 +4615,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     lastScheduledTime = computeNextScheduledTime({
                         index: i,
                         lastScheduledTime,
+                        intervalMinutes: profile.schedule_interval || 5,
                         now: new Date()
                     });
 
