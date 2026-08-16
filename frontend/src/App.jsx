@@ -454,6 +454,7 @@ const App = () => {
 
   useEffect(() => {
     fetchData();
+    fetchConfig();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -466,11 +467,24 @@ const App = () => {
     });
   }, [profiles]);
 
+  // Config is deliberately NOT part of the 5s poll below. Overwriting it on a
+  // timer wipes edits the user has not saved yet -- picking a date takes longer
+  // than one poll interval, so the pick was always reverted before Save. Server
+  // side config only changes when this app writes it, so mount + after-save is
+  // enough.
+  const fetchConfig = async () => {
+    try {
+      const res = await axios.get('/api/config');
+      setConfig(res.data || { videoFolder: '', maxConcurrency: 2 });
+    } catch (err) {
+      console.error('Fetch config error:', err);
+    }
+  };
+
   const fetchData = async () => {
     try {
-      const [pRes, cRes, gRes] = await Promise.all([
+      const [pRes, gRes] = await Promise.all([
         axios.get('/api/profiles'),
-        axios.get('/api/config'),
         axios.get('/api/groups')
       ]);
 
@@ -486,7 +500,6 @@ const App = () => {
         });
       });
 
-      setConfig(cRes.data || { videoFolder: '', maxConcurrency: 2 });
       setGroups(gRes.data || []);
 
       // Sync engaging status from profile status field
@@ -778,6 +791,7 @@ const App = () => {
   const updateConfig = async () => {
     try {
       await axios.post('/api/config', config);
+      await fetchConfig();
       setMessage({ type: 'success', text: 'Settings updated' });
       setTimeout(() => setMessage(null), 3000);
     } catch (err) {
