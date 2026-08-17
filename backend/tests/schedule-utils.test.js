@@ -5,7 +5,8 @@ import {
     computeNextScheduledTime,
     inferScheduleFieldKind,
     formatScheduleValue,
-    sortScheduleInputs
+    sortScheduleInputs,
+    parseScheduleValue
 } from '../schedule-utils.js';
 
 test('computeNextScheduledTime starts at +20 minutes and rounds up to 5-minute mark', () => {
@@ -89,4 +90,58 @@ test('sortScheduleInputs keeps fields ordered top-to-bottom then left-to-right',
         sortScheduleInputs(inputs).map((input) => input.index),
         [0, 1, 2]
     );
+});
+
+// --- parseScheduleValue -----------------------------------------------------
+
+const localIso = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+test('parseScheduleValue keeps the month when today is a day that month lacks', () => {
+    // Running just before midnight on the 31st: TikTok proposes the 1st of the
+    // next month. Building the date by mutating today overflowed -- Aug 31 with
+    // the month set to September is Oct 1 -- pushing every schedule a month out.
+    const endOfAugust = new Date(2026, 7, 31, 23, 50, 0, 0);
+
+    assert.equal(
+        localIso(parseScheduleValue('2026-09-01', '00:10', endOfAugust)),
+        '2026-09-01 00:10'
+    );
+    assert.equal(
+        localIso(parseScheduleValue('2026-02-01', '00:10', new Date(2026, 0, 31, 23, 50))),
+        '2026-02-01 00:10'
+    );
+    assert.equal(
+        localIso(parseScheduleValue('2026-04-01', '00:05', new Date(2026, 2, 31, 23, 45))),
+        '2026-04-01 00:05'
+    );
+});
+
+test('parseScheduleValue reads the usual formats', () => {
+    const now = new Date(2026, 7, 18, 12, 0, 0, 0);
+
+    assert.equal(localIso(parseScheduleValue('2026-08-19', '00:10', now)), '2026-08-19 00:10');
+    assert.equal(localIso(parseScheduleValue('2026.08.19', '23:05', now)), '2026-08-19 23:05');
+    assert.equal(localIso(parseScheduleValue('08/19/2026', '9:30', now)), '2026-08-19 09:30');
+    assert.equal(localIso(parseScheduleValue('19/08/2026', '9:30', now)), '2026-08-19 09:30');
+});
+
+test('parseScheduleValue handles AM/PM', () => {
+    const now = new Date(2026, 7, 18, 12, 0, 0, 0);
+
+    assert.equal(localIso(parseScheduleValue('2026-08-18', '4:45 PM', now)), '2026-08-18 16:45');
+    assert.equal(localIso(parseScheduleValue('2026-08-18', '12:05 AM', now)), '2026-08-18 00:05');
+    assert.equal(localIso(parseScheduleValue('2026-08-18', '12:05 PM', now)), '2026-08-18 12:05');
+});
+
+test('parseScheduleValue falls back to today when the date has no separator', () => {
+    const now = new Date(2026, 7, 18, 12, 0, 0, 0);
+
+    assert.equal(localIso(parseScheduleValue('hom nay', '07:20', now)), '2026-08-18 07:20');
+});
+
+test('parseScheduleValue returns null on missing or unreadable input', () => {
+    assert.equal(parseScheduleValue('', '00:10'), null);
+    assert.equal(parseScheduleValue('2026-08-18', ''), null);
+    assert.equal(parseScheduleValue('2026-08-18', 'khong co gio'), null);
 });

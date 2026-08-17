@@ -103,7 +103,7 @@ export function sortScheduleInputs(inputs = []) {
 /**
  * Attempts to parse a date and time string from TikTok inputs back into a Date object.
  */
-export function parseScheduleValue(dateStr, timeStr) {
+export function parseScheduleValue(dateStr, timeStr, now = new Date()) {
     if (!dateStr || !timeStr) return null;
 
     try {
@@ -136,11 +136,19 @@ export function parseScheduleValue(dateStr, timeStr) {
             if (meridiem.toUpperCase() === 'AM' && hours === 12) hours = 0;
         }
 
-        const date = new Date();
-        if (year) date.setFullYear(year);
-        if (month) date.setMonth(month - 1);
-        if (day) date.setDate(day);
-        date.setHours(hours, minutes, 0, 0);
+        // Build every field at once. Setting them one by one on top of today's
+        // date overflows whenever today's day-of-month does not exist in the
+        // target month -- on Aug 31, setMonth(September) lands on Oct 1, which
+        // pushed the whole schedule a month out for runs just before midnight.
+        const date = new Date(
+            year || now.getFullYear(),
+            month ? month - 1 : now.getMonth(),
+            day || now.getDate(),
+            hours,
+            minutes,
+            0,
+            0
+        );
 
         return date;
     } catch (e) {
