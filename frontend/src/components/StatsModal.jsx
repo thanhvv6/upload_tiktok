@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   X, Download, StopCircle, BarChart2,
   CheckCircle2, AlertCircle, Loader2, FileSpreadsheet,
-  Video, Hash, Flag
+  Video, Hash, Flag, Heart
 } from 'lucide-react';
 
 export default function StatsModal({ isOpen, profileIds, onClose }) {
@@ -64,6 +64,14 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
         setProgress(prev => ({
           ...prev,
           [ev.profileId]: { done: ev.done, total: ev.total, name: ev.profileName },
+        }));
+      } else if (ev.type === 'account') {
+        setProgress(prev => ({
+          ...prev,
+          [ev.profileId]: {
+            ...(prev[ev.profileId] || { done: 0, total: 0, name: ev.profileName }),
+            followers: ev.followers,
+          },
         }));
       } else if (ev.type === 'video') {
         setLogs(prev => [...prev, { ...ev, isError: false }]);
@@ -139,6 +147,7 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
   const profileList = Object.entries(progress);
   const logCount = logs.filter(l => !l.isError).length;
   const restrictedCount = logs.filter(l => !l.isError && l.restricted).length;
+  const totalLikes = logs.reduce((sum, l) => sum + (l.isError ? 0 : (l.likes || 0)), 0);
   const totalVideos = profileList.reduce((sum, [, p]) => sum + (p.total || 0), 0);
   const doneVideos = profileList.reduce((sum, [, p]) => sum + (p.done || 0), 0);
   const allProfilesDone = profileList.length > 0 && profileList.every(([, p]) => p.done >= p.total && p.total > 0);
@@ -197,6 +206,13 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
                 </div>
               </div>
               <div className="stats-summary-card">
+                <div className="stats-summary-value">{totalLikes.toLocaleString()}</div>
+                <div className="stats-summary-label">
+                  <Heart size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
+                  Tổng tim
+                </div>
+              </div>
+              <div className="stats-summary-card">
                 <div className="stats-summary-value">{restrictedCount}</div>
                 <div className="stats-summary-label">
                   <Flag size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
@@ -229,8 +245,15 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
                       }
                       {p.name}
                     </span>
-                    <span className={`stats-profile-status ${status}`}>
-                      {status === 'done' ? 'Hoàn thành' : 'Đang quét...'}
+                    <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {p.followers != null && (
+                        <span className="stats-profile-followers">
+                          {p.followers.toLocaleString()} follower
+                        </span>
+                      )}
+                      <span className={`stats-profile-status ${status}`}>
+                        {status === 'done' ? 'Hoàn thành' : 'Đang quét...'}
+                      </span>
                     </span>
                   </div>
                   <div className="stats-progress-bar">
@@ -258,12 +281,20 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
                 <div className="stats-log-row" style={{ background: 'rgba(255,255,255,0.03)', fontWeight: 600, fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
                   <span style={{ minWidth: 90 }}>Ngày đăng</span>
                   <span style={{ textAlign: 'right' }}>Lượt xem</span>
-                  <span style={{ textAlign: 'center', minWidth: 90 }}>Trạng thái</span>
+                  <span style={{ textAlign: 'right' }}>Tim</span>
+                  <span style={{ textAlign: 'right' }}>Follow mới</span>
+                  <span style={{ textAlign: 'center' }}>Trạng thái</span>
                 </div>
                 {logs.map((log, i) => (
                   <div key={i} className="stats-log-row">
                     <span className="stats-log-date">{log.date || '—'}</span>
                     <span className="stats-log-views">{log.views?.toLocaleString() || 0}</span>
+                    <span className="stats-log-metric">
+                      {log.likes != null ? log.likes.toLocaleString() : '—'}
+                    </span>
+                    <span className="stats-log-metric">
+                      {log.newFollowers != null ? log.newFollowers.toLocaleString() : '—'}
+                    </span>
                     {log.isError ? (
                       <span className="stats-log-badge restricted">Lỗi</span>
                     ) : log.restricted ? (

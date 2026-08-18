@@ -34,7 +34,7 @@ import { createProfileRecord } from './profile-store.js';
 import { getFolderVideoStatus } from './video-folder-status.js';
 import {
   createJob, getJob, addClient, removeClient,
-  pushEvent, appendResult, markProfileDone, markError,
+  pushEvent, appendResult, setProfileMeta, markProfileDone, markError,
   markAllDone, cancelJob, isAborted, getExcelBuffer,
 } from './stats-store.js';
 import { runStatsForProfile } from './stats-automation.mjs';
@@ -6519,6 +6519,7 @@ app.post('/api/stats/start', async (req, res) => {
       PROFILES_DIR,
       pushEvent,
       appendResult,
+      setProfileMeta,
       markProfileDone,
       markError,
       isAborted,
