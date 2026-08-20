@@ -12,6 +12,13 @@ export const NEW_FOLLOWER_KEYS = [
   'new_follower_num', 'new_follower_count', 'new_followers', 'new_follower',
   'follower_increase', 'net_follower_num', 'follower_num_increase',
 ];
+// Chuỗi TikTok hiển thị thay cho analytics khi video chưa công khai (đang chờ
+// lịch). Hai hàm chạy-trong-trang bên dưới đều cần, mà page.evaluate không mang
+// theo biến ngoài, nên giữ ở dạng nguồn regex để truyền vào như tham số.
+export const AWAITING_PUBLISH_PATTERNS = [
+  'post status to public',
+  'tr\u1ea1ng th\u00e1i[^.]{0,40}c\u00f4ng khai',
+];
 const LIKE_LABELS = ['Likes', 'Like', 'Lượt thích', 'Thích'];
 const NEW_FOLLOWER_LABELS = [
   'New followers', 'New follower', 'Người theo dõi mới', 'Lượt theo dõi mới', 'Follower mới',
@@ -95,6 +102,7 @@ export async function runStatsForProfile(profile, jobId, ctx) {
 
     // ── Phase 2: Extract stats for each video ──
     let processedCount = 0;
+    let skippedScheduled = 0;
     const sniffer = attachAnalyticsSniffer(page);
     let loggedMetricKeys = false;
 
@@ -116,7 +124,10 @@ export async function runStatsForProfile(profile, jobId, ctx) {
         continue;
       }
 
-      // Wait for analytics content
+      // Wait for analytics content. Trang không có thẻ này (video hạn chế, hoặc
+      // video đang chờ lịch) sẽ chờ hết 8 giây — đó cũng là khoảng nghỉ để
+      // banner kịp render trước khi đọc. Nếu muốn rút ngắn, nhớ waitForSelector
+      // mặc định chờ state 'visible', không phải chỉ gắn vào DOM.
       try {
         await page.waitForSelector('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]', { timeout: 8000 });
       } catch {
@@ -132,8 +143,28 @@ export async function runStatsForProfile(profile, jobId, ctx) {
       // Extract date, views, likes and new followers from the rendered page
       const analyticsData = await page.evaluate(
         readVideoAnalytics,
-        { likeLabels: LIKE_LABELS, followLabels: NEW_FOLLOWER_LABELS },
+        {
+          likeLabels: LIKE_LABELS,
+          followLabels: NEW_FOLLOWER_LABELS,
+          awaitingPublishPatterns: AWAITING_PUBLISH_PATTERNS,
+        },
       );
+
+      // Video đang chờ lịch: không có số liệu để lấy. Vẫn tính vào tiến độ vì
+      // nó đã được duyệt, nhưng không đưa vào kết quả hay Excel.
+      if (analyticsData.awaitingPublish) {
+        processedCount++;
+        skippedScheduled++;
+        log(`  -> skipped: chua dang (dang cho lich)`);
+        pushEvent(jobId, {
+          type: 'progress',
+          profileId: profile.id,
+          profileName: profile.name,
+          done: processedCount,
+          total: videos.length,
+        });
+        continue;
+      }
 
       const payloads = sniffer.take();
       if (!loggedMetricKeys) {
@@ -180,7 +211,8 @@ export async function runStatsForProfile(profile, jobId, ctx) {
 
     sniffer.detach();
     markProfileDone(jobId, profile.id);
-    log(`Done! Processed ${processedCount}/${videos.length} videos`);
+    log(`Done! Processed ${processedCount}/${videos.length} videos`
+      + (skippedScheduled ? ` (${skippedScheduled} scheduled, excluded from stats)` : ''));
   } catch (err) {
     log(`Error: ${err.message}`);
     markError(jobId, profile.id, err.message);
@@ -307,18 +339,31 @@ async function discoverAllVideos(page, log, isAborted, jobId, statsLimitDate) {
 }
 
 async function checkRestriction(page) {
-  return await page.evaluate(() => {
-    const banner = document.querySelector('[data-tt="components_AnalyticsPageBanner_TUXText"]');
-    if (banner) return true;
-    return (document.body.textContent || '').includes('not eligible for recommendation');
+  return await page.evaluate(readRestriction, {
+    awaitingPublishPatterns: AWAITING_PUBLISH_PATTERNS,
   });
+}
+
+// Runs inside the analytics page. Exported so it can be tested against a
+// fixture instead of a live TikTok session.
+export function readRestriction({ awaitingPublishPatterns = [] } = {}) {
+  const matches = (text) =>
+    awaitingPublishPatterns.some((pattern) => new RegExp(pattern).test(String(text || '').toLowerCase()));
+
+  const banner = document.querySelector('[data-tt="components_AnalyticsPageBanner_TUXText"]');
+  // Trang của video đang chờ lịch dùng CHÍNH banner này để nhắc đổi trạng thái
+  // bài đăng sang công khai. Đó không phải hạn chế — coi nhầm thì mọi video chờ
+  // lịch bị đếm vào ô "Bị hạn chế".
+  if (banner && !matches(banner.textContent)) return true;
+
+  return (document.body.textContent || '').includes('not eligible for recommendation');
 }
 
 
 
 // Runs inside the analytics page. Exported so the DOM heuristics can be tested
 // against a fixture instead of a live TikTok session.
-export function readVideoAnalytics({ likeLabels, followLabels }) {
+export function readVideoAnalytics({ likeLabels, followLabels, awaitingPublishPatterns = [] }) {
   const parseViews = (raw) => {
     const match = String(raw || '').trim().replace(/,/g, '').match(/^([\d.]+)\s*([KMB])?/i);
     if (!match) return NaN;
@@ -363,6 +408,13 @@ export function readVideoAnalytics({ likeLabels, followLabels }) {
   const bodyText = document.body.innerText || '';
   const dateMatch = bodyText.match(/Posted on (\d{1,2}\/\d{1,2}\/\d{4})/);
 
+  // Video đang chờ lịch chưa có analytics: TikTok thay toàn bộ nội dung bằng
+  // lời nhắc "To see analytics, switch your post status to public." Đây là dấu
+  // hiệu duy nhất đáng tin — API item_list trả video chờ lịch chung danh sách
+  // với video đã đăng, và create_time của chúng là giờ upload nên không tách được.
+  const lowerBody = bodyText.toLowerCase();
+  const awaitingPublish = awaitingPublishPatterns.some((pattern) => new RegExp(pattern).test(lowerBody));
+
   const viewEls = document.querySelectorAll('[data-tt="VideoOverviewPage_VideoInfoCard_TUXText"]');
   let views = 0;
   for (const el of viewEls) {
@@ -375,6 +427,7 @@ export function readVideoAnalytics({ likeLabels, followLabels }) {
     views,
     likes: readByLabel(likeLabels),
     newFollowers: readByLabel(followLabels),
+    awaitingPublish,
   };
 }
 
