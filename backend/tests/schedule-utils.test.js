@@ -6,7 +6,8 @@ import {
     inferScheduleFieldKind,
     formatScheduleValue,
     sortScheduleInputs,
-    parseScheduleValue
+    parseScheduleValue,
+    parseStudioScheduleLabel
 } from '../schedule-utils.js';
 
 test('computeNextScheduledTime starts at +20 minutes and rounds up to 5-minute mark', () => {
@@ -144,4 +145,56 @@ test('parseScheduleValue returns null on missing or unreadable input', () => {
     assert.equal(parseScheduleValue('', '00:10'), null);
     assert.equal(parseScheduleValue('2026-08-18', ''), null);
     assert.equal(parseScheduleValue('2026-08-18', 'khong co gio'), null);
+});
+
+// --- parseStudioScheduleLabel -----------------------------------------------
+
+test('parseStudioScheduleLabel fills in the current year when the label omits it', () => {
+    const now = new Date(2026, 6, 10, 9, 0);
+
+    // new Date("Jul 13, 3:30 PM") tự cho ra năm 2001 — mốc phải là năm hiện tại.
+    assert.equal(localIso(parseStudioScheduleLabel('Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
+    assert.equal(localIso(parseStudioScheduleLabel('Jul 13, 15:30', now)), '2026-07-13 15:30');
+    assert.equal(localIso(parseStudioScheduleLabel('13 Jul, 15:30', now)), '2026-07-13 15:30');
+});
+
+test('parseStudioScheduleLabel rolls to next year for a label read across new year', () => {
+    const now = new Date(2026, 11, 29, 23, 40);
+
+    assert.equal(localIso(parseStudioScheduleLabel('Jan 2, 9:00 AM', now)), '2027-01-02 09:00');
+    // Lịch vừa chạy xong vài ngày trước vẫn thuộc năm hiện tại, không đẩy sang năm sau.
+    assert.equal(localIso(parseStudioScheduleLabel('Dec 27, 9:00 AM', now)), '2026-12-27 09:00');
+});
+
+test('parseStudioScheduleLabel honours an explicit year in the label', () => {
+    const now = new Date(2026, 6, 10, 9, 0);
+
+    assert.equal(localIso(parseStudioScheduleLabel('Dec 25, 2027 3:30 PM', now)), '2027-12-25 15:30');
+    assert.equal(localIso(parseStudioScheduleLabel('12/25/2027 3:30 PM', now)), '2027-12-25 15:30');
+    assert.equal(localIso(parseStudioScheduleLabel('25/12/2027 15:30', now)), '2027-12-25 15:30');
+});
+
+test('parseStudioScheduleLabel strips the "Scheduled" prefix TikTok puts on the label', () => {
+    const now = new Date(2026, 6, 10, 9, 0);
+
+    assert.equal(localIso(parseStudioScheduleLabel('Scheduled for Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
+    assert.equal(localIso(parseStudioScheduleLabel('Scheduled Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
+});
+
+test('parseStudioScheduleLabel reads midnight and noon correctly', () => {
+    const now = new Date(2026, 6, 10, 9, 0);
+
+    assert.equal(localIso(parseStudioScheduleLabel('Jul 13, 12:05 AM', now)), '2026-07-13 00:05');
+    assert.equal(localIso(parseStudioScheduleLabel('Jul 13, 12:05 PM', now)), '2026-07-13 12:05');
+});
+
+test('parseStudioScheduleLabel returns null on empty or unreadable labels', () => {
+    const now = new Date(2026, 6, 10, 9, 0);
+
+    assert.equal(parseStudioScheduleLabel('', now), null);
+    assert.equal(parseStudioScheduleLabel(null, now), null);
+    assert.equal(parseStudioScheduleLabel('Public', now), null);
+    assert.equal(parseStudioScheduleLabel('Jul 13', now), null);
+    assert.equal(parseStudioScheduleLabel('3:30 PM', now), null);
+    assert.equal(parseStudioScheduleLabel('Feb 31, 3:30 PM', now), null);
 });

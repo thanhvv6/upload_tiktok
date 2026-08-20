@@ -11,6 +11,7 @@ import {
     computeNextScheduledTime,
     computeAutoIncrementTime,
     parseScheduleValue,
+    parseStudioScheduleLabel,
     formatScheduleValue,
     getScheduleHintText,
     inferScheduleFieldKind,
@@ -3906,10 +3907,121 @@ async function dismissOnboardingModals(page, log) {
     } catch (e) { /* not found */ }
 }
 
+// Nhãn trạng thái của mỗi dòng trên TikTok Studio Content. Dòng đang chờ đăng
+// có thêm icon Alarm bên cạnh mốc thời gian.
+const STUDIO_STAGE_LABEL = '[data-tt="components_PublishStageLabel_FlexCenter"]';
+const STUDIO_STAGE_LABEL_TEXT = '[data-tt="components_PublishStageLabel_TUXText"]';
+const STUDIO_ALARM_ICON = '[data-testid="Alarm"]';
+// Khung của trang Content. Kiểm chứng trực tiếp trên TikTok Studio: trang này
+// KHÔNG có <table>, không có [role="table"], cũng không có data-e2e nào — mọi
+// mốc neo đều nằm ở data-tt, nên đây là tín hiệu "trang đã render" duy nhất đáng
+// tin. Dùng để phân biệt kênh trống với danh sách chưa dựng xong.
+const STUDIO_PAGE_RENDERED = '[data-tt^="Content_ContentPage"], [data-tt^="components_PostPage"], [data-tt^="components_PostTable"]';
+// Chỉ nhận đúng nút của trạng thái kênh trống. Không dùng "Upload video" vì
+// chuỗi đó khớp luôn nút Upload thường trực trên header, khiến kênh đang có lịch
+// bị đọc nhầm thành kênh trống.
+const STUDIO_EMPTY_STATE = 'button:has-text("Upload first video"), a:has-text("Upload first video")';
+const STUDIO_ROWS_SCANNED = 20;
+
+/**
+ * Đọc trang TikTok Studio Content để tìm mốc lịch xa nhất đang còn chờ đăng.
+ *
+ * Trả về Date nếu kênh còn video đã lên lịch chưa chạy tới, null nếu kênh trống
+ * hoặc mọi video đã Public. Thử lại nhiều lần khi trang load chậm hoặc bị popup
+ * chắn; hết lượt mà vẫn không đọc được thì ném lỗi để dừng upload, vì lên lịch
+ * khi không biết loạt cũ đang nằm ở đâu sẽ đè chồng lên chúng.
+ */
+async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
+    log(`[Content Check] Reading TikTok Studio Content for pending schedules (max ${maxAttempts} attempts)...`);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            log(`[Content Check ${attempt}/${maxAttempts}] Navigating to TikTok Studio Content...`);
+            await page.goto('https://www.tiktok.com/tiktokstudio/content', {
+                waitUntil: 'domcontentloaded',
+                timeout: 30000
+            });
+            await page.waitForTimeout(3000);
+            await dismissPopups(page).catch(() => null);
+
+            if (page.url().includes('login') || page.url().includes('passport')) {
+                throw new Error('Redirected to login page while reading the content list.');
+            }
+
+            await page.waitForSelector(
+                `${STUDIO_STAGE_LABEL}, ${STUDIO_PAGE_RENDERED}, ${STUDIO_EMPTY_STATE}`,
+                { timeout: 15000, state: 'attached' }
+            );
+
+            const labels = page.locator(STUDIO_STAGE_LABEL);
+            const labelCount = await labels.count().catch(() => 0);
+
+            // Quét các dòng đầu danh sách chứ không chỉ dòng trên cùng, và lấy mốc
+            // xa nhất, để lịch mới luôn nối tiếp phía sau bất kể TikTok sắp xếp
+            // các video đã lên lịch theo thứ tự nào.
+            let latest = null;
+            const rowsToScan = Math.min(labelCount, STUDIO_ROWS_SCANNED);
+            for (let row = 0; row < rowsToScan; row++) {
+                const label = labels.nth(row);
+                const hasAlarm = (await label.locator(STUDIO_ALARM_ICON).count().catch(() => 0)) > 0;
+                if (!hasAlarm) continue;
+
+                const rawText = await label.locator(STUDIO_STAGE_LABEL_TEXT).first()
+                    .textContent().catch(() => '');
+                const timeText = (rawText || '').trim();
+                if (!timeText) continue;
+
+                const parsed = parseStudioScheduleLabel(timeText);
+                if (!parsed) {
+                    log(`[Content Check] Unreadable scheduled label "${timeText}". Skipping this row.`);
+                    continue;
+                }
+
+                log(`[Content Check] Pending schedule: "${timeText}" -> ${parsed.toISOString()}`);
+                if (!latest || parsed.getTime() > latest.getTime()) latest = parsed;
+            }
+
+            if (latest) {
+                log(`[Content Check] Latest pending schedule: ${latest.toISOString()}`);
+                return latest;
+            }
+
+            if (labelCount > 0) {
+                log('[Content Check] Videos exist but none is scheduled. Using default upload flow.');
+                return null;
+            }
+
+            // Không có dòng nào: phân biệt "kênh chưa có video" với "trang chưa
+            // render xong". Chỉ trường hợp đầu mới được coi là đọc thành công.
+            const pageRendered = (await page.locator(STUDIO_PAGE_RENDERED).count().catch(() => 0)) > 0;
+            const isEmptyStateVisible = await page.locator(STUDIO_EMPTY_STATE).first()
+                .isVisible().catch(() => false);
+
+            if (pageRendered || isEmptyStateVisible) {
+                log('[Content Check] Channel has no uploaded videos yet. Using default upload flow.');
+                return null;
+            }
+
+            throw new Error('Content page did not render (no rows, no page container, no empty state).');
+        } catch (e) {
+            log(`[Content Check ${attempt}/${maxAttempts}] Failed: ${e.message}`);
+            if (attempt >= maxAttempts) {
+                throw new Error(`Failed to read TikTok Studio Content after ${maxAttempts} attempts: ${e.message}`);
+            }
+            log('[Content Check] Retrying in 3 seconds...');
+            await page.waitForTimeout(3000);
+            await dismissPopups(page).catch(() => null);
+        }
+    }
+
+    return null;
+}
+
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
     let lastScheduledTime = null;
+    let hasExistingSchedule = false;
 
     const browserOptions = {
         headless: false,
@@ -3957,6 +4069,31 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     ? profile.upload_count
                     : videos.length;
         const uploadLimit = Math.min(videos.length, maxUploads);
+
+        // --- Nối tiếp loạt lịch cũ còn treo trên kênh ---
+        // Điều kiện phải khớp đúng nhánh auto-increment ở TASK 3 bên dưới, để
+        // không tốn một lượt mở trang Content cho những chế độ chạy không dùng
+        // tới mốc thời gian này.
+        if (!(limitUploads && uploadLimitCount === 1) && profile.auto_increment_schedule) {
+            const existingTime = await checkExistingScheduledTime(page, log);
+            if (existingTime) {
+                hasExistingSchedule = true;
+
+                // Mốc cũ có thể vừa trôi qua trong lúc trang đang load. Cộng dồn
+                // từ một mốc quá khứ sẽ cho ra giờ TikTok không nhận, nên kéo về
+                // sàn +20 phút giống các nhánh lên lịch khác.
+                const earliestBase = new Date(Date.now() + 20 * 60 * 1000);
+                if (existingTime.getTime() < earliestBase.getTime()) {
+                    log(`Existing schedule ${existingTime.toISOString()} is already past/too close. Clamping base to ${earliestBase.toISOString()}.`);
+                    lastScheduledTime = earliestBase;
+                } else {
+                    lastScheduledTime = existingTime;
+                }
+
+                log(`Existing schedule detected. ALL ${uploadLimit} video(s) will be scheduled after ${lastScheduledTime.toISOString()}.`);
+            }
+        }
+        // --- Hết phần đọc lịch cũ ---
 
         for (let i = 0; i < videos.length; i++) {
             if (uploadedCount >= maxUploads) {
@@ -4561,7 +4698,31 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             if (!(limitUploads && uploadLimitCount === 1) && profile.auto_increment_schedule) {
                 try {
                     log(`Auto-increment schedule: processing video ${i + 1}...`);
-                    if (i === 0) {
+                    if (hasExistingSchedule) {
+                        // Kênh còn loạt lịch cũ chưa chạy tới: không video nào được
+                        // đăng ngay, kể cả video đầu, nếu không nó sẽ chen lên trước
+                        // những video đang chờ. Mọi video nối tiếp sau mốc cuối cùng.
+                        const scheduleRadio = 'input[value="schedule"]';
+                        const scheduleRadioInput = page.locator(scheduleRadio).first();
+                        await scheduleRadioInput.waitFor({ timeout: 15000, state: 'attached' });
+                        await scheduleRadioInput.check({ force: true }).catch(() => scheduleRadioInput.click({ force: true }));
+                        log(`Selected "Schedule" option (continuing existing batch).`);
+                        await page.waitForTimeout(3000);
+
+                        const scheduleInputs = await resolveScheduleInputs(page, log);
+
+                        const intervalMin = profile.schedule_interval || 5;
+                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin });
+                        const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
+                        const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
+
+                        log(`Video ${i + 1}: Scheduling at ${dateValue} ${timeValue} (continuing existing batch).`);
+                        await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
+                        await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
+                        await page.waitForTimeout(2000);
+
+                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
+                    } else if (i === 0) {
                         log(`Video 1: Posting immediately (Public).`);
                         // Public is usually default, but we can ensure it if needed
                     } else {
@@ -4606,6 +4767,9 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     }
                 } catch (e) {
                     log(`Auto-increment scheduling failed: ${e.message}`);
+                    if (hasExistingSchedule) {
+                        log(`WARNING: video ${i + 1} will be posted immediately instead of being appended to the existing schedule.`);
+                    }
                 }
             } else if (!(limitUploads && uploadLimitCount === 1) && profile.is_scheduled && i >= 3) {
                 try {

@@ -156,3 +156,97 @@ export function parseScheduleValue(dateStr, timeStr, now = new Date()) {
         return null;
     }
 }
+
+const MONTH_ABBREVIATIONS = [
+    'jan', 'feb', 'mar', 'apr', 'may', 'jun',
+    'jul', 'aug', 'sep', 'oct', 'nov', 'dec'
+];
+
+// TikTok chỉ cho lên lịch tối đa 10 ngày. Một nhãn không có năm mà đã lùi quá
+// mốc này so với hiện tại thì gần như chắc chắn là lịch của năm sau (trường hợp
+// đứng cuối tháng 12 nhìn sang đầu tháng 1).
+const STALE_LABEL_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function readMonthAndDay(datePart) {
+    const monthIndex = MONTH_ABBREVIATIONS.findIndex(
+        (abbr) => new RegExp(`\\b${abbr}`, 'i').test(datePart)
+    );
+
+    if (monthIndex >= 0) {
+        // "Jul 13", "13 Jul", "July 13" — ngày là số 1-2 chữ số duy nhất còn lại.
+        const dayMatch = datePart.match(/\b(\d{1,2})\b/);
+        if (!dayMatch) return null;
+        return { month: monthIndex, day: Number(dayMatch[1]) };
+    }
+
+    // Dạng thuần số, năm đã được cắt bỏ trước đó: "07/13", "13/07", "-07-13".
+    const numbers = datePart.split(/\D+/).filter(Boolean).map(Number);
+    if (numbers.length < 2) return null;
+
+    // Số đầu > 12 thì chỉ có thể là ngày (DD/MM), ngược lại theo mặc định
+    // en-US của TikTok Studio là MM/DD.
+    return numbers[0] > 12
+        ? { month: numbers[1] - 1, day: numbers[0] }
+        : { month: numbers[0] - 1, day: numbers[1] };
+}
+
+/**
+ * Đọc nhãn trạng thái "đã lên lịch" trên TikTok Studio Content thành Date.
+ *
+ * Không dùng `new Date(text)` được: nhãn của TikTok thường bỏ năm khi lịch nằm
+ * trong năm hiện tại, và V8 mặc định năm 2001 cho chuỗi kiểu "Jul 13, 3:30 PM",
+ * đẩy toàn bộ lịch nối tiếp về quá khứ 25 năm.
+ */
+export function parseStudioScheduleLabel(text, now = new Date()) {
+    if (!text || typeof text !== 'string') return null;
+
+    const cleaned = text
+        .replace(/scheduled\s*(for)?/i, ' ')
+        .replace(/đã\s*lên\s*lịch/i, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!cleaned) return null;
+
+    const timeMatch = cleaned.match(/(\d{1,2}):(\d{2})(?:\s*(AM|PM))?/i);
+    if (!timeMatch) return null;
+
+    let hours = parseInt(timeMatch[1], 10);
+    const minutes = parseInt(timeMatch[2], 10);
+    const meridiem = timeMatch[3];
+    if (meridiem) {
+        if (meridiem.toUpperCase() === 'PM' && hours < 12) hours += 12;
+        if (meridiem.toUpperCase() === 'AM' && hours === 12) hours = 0;
+    }
+    if (hours > 23 || minutes > 59) return null;
+
+    const datePart = `${cleaned.slice(0, timeMatch.index)} ${cleaned.slice(timeMatch.index + timeMatch[0].length)}`
+        .replace(/,/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const explicitYearMatch = datePart.match(/\b(20\d{2})\b/);
+    const withoutYear = explicitYearMatch
+        ? datePart.replace(explicitYearMatch[0], ' ').replace(/\s+/g, ' ').trim()
+        : datePart;
+
+    const monthDay = readMonthAndDay(withoutYear);
+    if (!monthDay) return null;
+    const { month, day } = monthDay;
+    if (!(month >= 0 && month <= 11) || !(day >= 1 && day <= 31)) return null;
+
+    const build = (year) => {
+        const date = new Date(year, month, day, hours, minutes, 0, 0);
+        // Ngày không tồn tại (31/02, 29/02 năm thường) bị Date tự tràn sang
+        // tháng sau — loại bỏ thay vì trả về mốc sai.
+        if (date.getMonth() !== month || date.getDate() !== day) return null;
+        return date;
+    };
+
+    if (explicitYearMatch) return build(Number(explicitYearMatch[1]));
+
+    const sameYear = build(now.getFullYear());
+    if (sameYear && sameYear.getTime() >= now.getTime() - STALE_LABEL_GRACE_MS) {
+        return sameYear;
+    }
+    return build(now.getFullYear() + 1) || sameYear;
+}
