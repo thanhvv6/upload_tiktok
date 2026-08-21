@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   X, Download, StopCircle, BarChart2,
   CheckCircle2, AlertCircle, Loader2, FileSpreadsheet,
-  Video, Hash, Flag, Heart
+  Video, Hash, Flag
 } from 'lucide-react';
 
 export default function StatsModal({ isOpen, profileIds, onClose }) {
@@ -147,7 +147,6 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
   const profileList = Object.entries(progress);
   const logCount = logs.filter(l => !l.isError).length;
   const restrictedCount = logs.filter(l => !l.isError && l.restricted).length;
-  const totalLikes = logs.reduce((sum, l) => sum + (l.isError ? 0 : (l.likes || 0)), 0);
   const totalVideos = profileList.reduce((sum, [, p]) => sum + (p.total || 0), 0);
   const doneVideos = profileList.reduce((sum, [, p]) => sum + (p.done || 0), 0);
   const allProfilesDone = profileList.length > 0 && profileList.every(([, p]) => p.done >= p.total && p.total > 0);
@@ -203,13 +202,6 @@ export default function StatsModal({ isOpen, profileIds, onClose }) {
                 <div className="stats-summary-label">
                   <Video size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
                   Video đã quét
-                </div>
-              </div>
-              <div className="stats-summary-card">
-                <div className="stats-summary-value">{totalLikes.toLocaleString()}</div>
-                <div className="stats-summary-label">
-                  <Heart size={12} style={{ marginRight: 4, verticalAlign: -2 }} />
-                  Tổng tim
                 </div>
               </div>
               <div className="stats-summary-card">
