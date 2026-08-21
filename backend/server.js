@@ -17,6 +17,7 @@ import {
     inferScheduleFieldKind,
     sortScheduleInputs
 } from './schedule-utils.js';
+import { parseCookieHeader, hasLiveTikTokSession } from './cookie-utils.js';
 import {
     initGroupSchema,
     listGroups,
@@ -446,25 +447,27 @@ function parseProxy(proxyStr) {
 
 async function injectProfileCookies(browser, profile) {
     if (profile.cookies && profile.cookies.trim()) {
+        // Đừng đè lên một phiên đang sống sẵn trong user-data-dir. Cookie trong
+        // folder được Chrome cập nhật sau mỗi phiên, còn bản trong DB chỉ được
+        // ghi khi đăng nhập qua luồng tự động — nên bản trong DB luôn cũ hơn
+        // hoặc bằng. Bỏ qua bước này chính là thứ giữ lại lần đăng nhập tay:
+        // trước đây quét QR xong bấm Chạy là mất phiên, vì lượt tiêm kế tiếp
+        // thay nó bằng bộ cookie cũ đã chết trong DB.
+        const existing = await browser.cookies().catch(() => []);
+        if (hasLiveTikTokSession(existing)) {
+            console.log(`[${profile.name}] Profile đã có phiên TikTok đang sống — bỏ qua việc tiêm cookie từ DB.`);
+            return;
+        }
+
         try {
             let cookies;
             try {
                 cookies = JSON.parse(profile.cookies);
             } catch (jsonErr) {
-                // Try parsing raw cookie string format (name1=value1; name2=value2)
-                cookies = profile.cookies.split(';').map(part => {
-                    const equalIdx = part.indexOf('=');
-                    if (equalIdx === -1) return null;
-                    const name = part.substring(0, equalIdx).trim();
-                    const value = part.substring(equalIdx + 1).trim();
-                    if (!name) return null;
-                    return {
-                        name,
-                        value,
-                        domain: '.tiktok.com',
-                        path: '/'
-                    };
-                }).filter(Boolean);
+                // Dạng chuỗi "name1=value1; name2=value2". parseCookieHeader gán
+                // hạn cho chúng — thiếu hạn thì Playwright tạo cookie phiên và
+                // ghi đè mất cookie persistent đang có trong user-data-dir.
+                cookies = parseCookieHeader(profile.cookies);
             }
             if (Array.isArray(cookies) && cookies.length > 0) {
                 const cleanedCookies = cookies.map(c => {
