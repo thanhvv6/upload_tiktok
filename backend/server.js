@@ -10,6 +10,9 @@ import axios from 'axios';
 import {
     computeNextScheduledTime,
     computeAutoIncrementTime,
+    computeDelayedFirstTime,
+    POST_DELAY_MIN_HOURS,
+    POST_DELAY_MAX_HOURS,
     parseScheduleValue,
     parseStudioScheduleLabel,
     formatScheduleValue,
@@ -391,6 +394,21 @@ const setConfig = (key, value) => {
 
 if (!getConfig('videoFolder', null)) setConfig('videoFolder', UPLOADS_DIR);
 if (!getConfig('maxConcurrency', null)) setConfig('maxConcurrency', '2');
+if (!getConfig('postDelayEnabled', null)) setConfig('postDelayEnabled', '0');
+if (!getConfig('postDelayHours', null)) setConfig('postDelayHours', '1');
+
+// Hẹn giờ đăng — setting toàn cục, ăn cho mọi profile và mọi kiểu chạy.
+const normalizePostDelayHours = (value) => {
+    const hours = Number(value);
+    if (!Number.isFinite(hours)) return null;
+    return Math.min(Math.max(hours, POST_DELAY_MIN_HOURS), POST_DELAY_MAX_HOURS);
+};
+
+// Trả về 0 khi tắt, để chỗ gọi chỉ cần kiểm tra > 0.
+const getPostDelayHours = () => {
+    if (String(getConfig('postDelayEnabled', '0')) !== '1') return 0;
+    return normalizePostDelayHours(getConfig('postDelayHours', 1)) ?? 0;
+};
 
 // Cleanup: Reset any stuck profiles to "idle" on startup
 db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'logging_in', 'changing_avatar', 'adding_favorite_music')").run();
@@ -1605,7 +1623,19 @@ app.post('/api/select-image-file', (req, res) => {
 });
 
 app.post('/api/config', (req, res) => {
-    Object.entries(req.body).forEach(([k, v]) => setConfig(k, v));
+    Object.entries(req.body).forEach(([k, v]) => {
+        if (k === 'postDelayEnabled') {
+            return setConfig(k, v && String(v) !== '0' ? '1' : '0');
+        }
+        if (k === 'postDelayHours') {
+            // Số giờ ngoài khoảng TikTok chấp nhận bị kẹp lại; không đọc được
+            // thì giữ nguyên giá trị cũ thay vì ghi NaN vào config.
+            const hours = normalizePostDelayHours(v);
+            if (hours === null) return;
+            return setConfig(k, hours);
+        }
+        setConfig(k, v);
+    });
     res.json({ success: true });
 });
 
@@ -4025,6 +4055,10 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     let uploadedCount = 0;
     let lastScheduledTime = null;
     let hasExistingSchedule = false;
+    // Hẹn giờ đăng: 0 nghĩa là tắt, khi bật thì không video nào được đăng ngay,
+    // kể cả video đầu của lượt chạy.
+    const postDelayHours = getPostDelayHours();
+    const delayedStart = postDelayHours > 0;
 
     const browserOptions = {
         headless: false,
@@ -4074,10 +4108,11 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         const uploadLimit = Math.min(videos.length, maxUploads);
 
         // --- Nối tiếp loạt lịch cũ còn treo trên kênh ---
-        // Điều kiện phải khớp đúng nhánh auto-increment ở TASK 3 bên dưới, để
-        // không tốn một lượt mở trang Content cho những chế độ chạy không dùng
-        // tới mốc thời gian này.
-        if (!(limitUploads && uploadLimitCount === 1) && profile.auto_increment_schedule) {
+        // Điều kiện phải khớp đúng nhánh lên lịch ở TASK 3 bên dưới, để không
+        // tốn một lượt mở trang Content cho những chế độ chạy không dùng tới
+        // mốc thời gian này. Khi bật hẹn giờ đăng thì mọi profile đều phải đọc,
+        // vì lịch cũ được ưu tiên hơn mốc hẹn giờ.
+        if (delayedStart || (!(limitUploads && uploadLimitCount === 1) && profile.auto_increment_schedule)) {
             const existingTime = await checkExistingScheduledTime(page, log);
             if (existingTime) {
                 hasExistingSchedule = true;
@@ -4094,6 +4129,8 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 }
 
                 log(`Existing schedule detected. ALL ${uploadLimit} video(s) will be scheduled after ${lastScheduledTime.toISOString()}.`);
+            } else if (delayedStart) {
+                log(`Post delay is on: no pending schedule on the channel, video 1 will be scheduled ${postDelayHours}h from now.`);
             }
         }
         // --- Hết phần đọc lịch cũ ---
@@ -4698,28 +4735,38 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             // --- END TASK: Content Check Lite ---
 
             // --- TASK 3: Scheduled Publishing ---
-            if (!(limitUploads && uploadLimitCount === 1) && profile.auto_increment_schedule) {
+            if (delayedStart || (!(limitUploads && uploadLimitCount === 1) && profile.auto_increment_schedule)) {
                 try {
                     log(`Auto-increment schedule: processing video ${i + 1}...`);
-                    if (hasExistingSchedule) {
-                        // Kênh còn loạt lịch cũ chưa chạy tới: không video nào được
-                        // đăng ngay, kể cả video đầu, nếu không nó sẽ chen lên trước
-                        // những video đang chờ. Mọi video nối tiếp sau mốc cuối cùng.
+                    if (hasExistingSchedule || delayedStart) {
+                        // Hai trường hợp cùng dùng nhánh này vì hành vi giống hệt nhau:
+                        // kênh còn loạt lịch cũ chưa chạy tới (nối sau mốc cuối, nếu
+                        // đăng ngay sẽ chen lên trước những video đang chờ), hoặc đang
+                        // bật hẹn giờ đăng (video đầu lùi lại đúng số giờ đã cài).
+                        // Không video nào được đăng ngay, kể cả video đầu.
                         const scheduleRadio = 'input[value="schedule"]';
                         const scheduleRadioInput = page.locator(scheduleRadio).first();
                         await scheduleRadioInput.waitFor({ timeout: 15000, state: 'attached' });
                         await scheduleRadioInput.check({ force: true }).catch(() => scheduleRadioInput.click({ force: true }));
-                        log(`Selected "Schedule" option (continuing existing batch).`);
+                        const batchLabel = hasExistingSchedule
+                            ? 'continuing existing batch'
+                            : `delayed start +${postDelayHours}h`;
+                        log(`Selected "Schedule" option (${batchLabel}).`);
                         await page.waitForTimeout(3000);
 
                         const scheduleInputs = await resolveScheduleInputs(page, log);
 
                         const intervalMin = profile.schedule_interval || 5;
-                        lastScheduledTime = computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin });
+                        // Chưa có mốc nào nghĩa là kênh sạch lịch và đang hẹn giờ:
+                        // video đầu lấy now + số giờ đã cài. Từ video 2 trở đi nối
+                        // tiếp bình thường theo schedule_interval của profile.
+                        lastScheduledTime = lastScheduledTime
+                            ? computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin })
+                            : computeDelayedFirstTime({ delayHours: postDelayHours, intervalMinutes: intervalMin });
                         const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                         const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 
-                        log(`Video ${i + 1}: Scheduling at ${dateValue} ${timeValue} (continuing existing batch).`);
+                        log(`Video ${i + 1}: Scheduling at ${dateValue} ${timeValue} (${batchLabel}).`);
                         await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
                         await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
                         await page.waitForTimeout(2000);
@@ -4770,8 +4817,8 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     }
                 } catch (e) {
                     log(`Auto-increment scheduling failed: ${e.message}`);
-                    if (hasExistingSchedule) {
-                        log(`WARNING: video ${i + 1} will be posted immediately instead of being appended to the existing schedule.`);
+                    if (hasExistingSchedule || delayedStart) {
+                        log(`WARNING: video ${i + 1} will be posted immediately instead of being scheduled.`);
                     }
                 }
             } else if (!(limitUploads && uploadLimitCount === 1) && profile.is_scheduled && i >= 3) {

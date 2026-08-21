@@ -393,7 +393,7 @@ ProfileCard.displayName = 'ProfileCard';
 
 const App = () => {
   const [profiles, setProfiles] = useState([]);
-  const [config, setConfig] = useState({ videoFolder: '', maxConcurrency: 2, statsLimitDate: null });
+  const [config, setConfig] = useState({ videoFolder: '', maxConcurrency: 2, statsLimitDate: null, postDelayEnabled: 0, postDelayHours: 1 });
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileGroupId, setNewProfileGroupId] = useState('');
   const [newProfileVideoFolder, setNewProfileVideoFolder] = useState('');
@@ -475,7 +475,7 @@ const App = () => {
   const fetchConfig = async () => {
     try {
       const res = await axios.get('/api/config');
-      setConfig(res.data || { videoFolder: '', maxConcurrency: 2 });
+      setConfig(res.data || { videoFolder: '', maxConcurrency: 2, postDelayEnabled: 0, postDelayHours: 1 });
     } catch (err) {
       console.error('Fetch config error:', err);
     }
@@ -786,6 +786,16 @@ const App = () => {
       console.error(err);
       alert('Có lỗi khi xóa profile');
     }
+  };
+
+  // Giờ dự kiến của video đầu khi bật hẹn giờ. Chỉ là ước lượng cho người dùng
+  // nhìn: backend còn làm tròn lên theo khoảng cách lịch của từng profile.
+  const postDelayPreview = () => {
+    const hours = Number(config.postDelayHours);
+    if (!Number.isFinite(hours) || hours <= 0) return null;
+    return new Date(Date.now() + hours * 60 * 60 * 1000).toLocaleString('vi-VN', {
+      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+    });
   };
 
   const updateConfig = async () => {
@@ -1603,6 +1613,12 @@ const App = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   <span>Stats Date Limit</span>
                   <span style={{ color: 'white' }}>{config.statsLimitDate || 'None'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  <span>Hẹn giờ đăng</span>
+                  <span style={{ color: 'white' }}>
+                    {Number(config.postDelayEnabled) === 1 ? `${config.postDelayHours}h` : 'Off'}
+                  </span>
                 </div>
               </div>
             </motion.div>
@@ -3155,6 +3171,54 @@ const App = () => {
                     </div>
                     <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
                       Control how many browser instances run concurrently.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={Number(config.postDelayEnabled) === 1}
+                        onChange={(e) => setConfig({ ...config, postDelayEnabled: e.target.checked ? 1 : 0 })}
+                        style={{ width: '18px', height: '18px', accentColor: 'var(--primary)', cursor: 'pointer', flexShrink: 0 }}
+                      />
+                      <span style={{ fontSize: '0.95rem', fontWeight: '600' }}>Hẹn giờ đăng video đầu</span>
+                    </label>
+
+                    {Number(config.postDelayEnabled) === 1 && (
+                      <div style={{ marginTop: '12px', paddingLeft: '28px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <input
+                            type="number"
+                            className="input"
+                            style={{ width: '120px' }}
+                            min="0.5"
+                            max="240"
+                            step="0.5"
+                            value={config.postDelayHours ?? 1}
+                            onChange={(e) => setConfig({ ...config, postDelayHours: e.target.value })}
+                            onBlur={(e) => {
+                              const hours = Number(e.target.value);
+                              const safe = Number.isFinite(hours) ? Math.min(Math.max(hours, 0.5), 240) : 1;
+                              setConfig({ ...config, postDelayHours: safe });
+                            }}
+                          />
+                          <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                            giờ &mdash; tối thiểu 0.5 (30 phút), tối đa 240 (10 ngày)
+                          </span>
+                        </div>
+                        {postDelayPreview() && (
+                          <p style={{ fontSize: '0.8rem', color: 'var(--primary)', marginTop: '8px' }}>
+                            Chạy bây giờ thì video đầu lên lịch khoảng {postDelayPreview()}.
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '8px' }}>
+                      Bật thì mọi lượt chạy (Start, Run All, lịch tự động, webhook) đều không đăng ngay:
+                      video đầu được hẹn sau số giờ này, các video sau nối tiếp theo khoảng cách lịch của
+                      từng profile. Kênh còn lịch cũ đang treo thì vẫn ưu tiên nối tiếp lịch cũ.
                     </p>
                   </div>
 

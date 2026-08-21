@@ -25,6 +25,34 @@ export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 
     return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
 }
 
+// Hẹn giờ đăng (setting toàn cục): TikTok chỉ nhận lịch trong vòng 10 ngày và
+// từ chối mốc quá sát hiện tại, nên số giờ người dùng nhập bị kẹp hai đầu.
+export const POST_DELAY_MIN_HOURS = 0.5;
+export const POST_DELAY_MAX_HOURS = 240;
+
+/**
+ * Mốc cho video đầu tiên khi bật hẹn giờ đăng: now + số giờ đã cài, vẫn giữ
+ * sàn +20 phút và làm tròn lên bội số interval như hai hàm lên lịch còn lại,
+ * để video 2 trở đi nối tiếp trên cùng một lưới thời gian.
+ */
+export function computeDelayedFirstTime({ delayHours, intervalMinutes = 5, now = new Date() }) {
+    const stepMin = Number(intervalMinutes) || 5;
+    const stepMs = stepMin * 60 * 1000;
+    const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
+
+    const requestedHours = Number(delayHours);
+    const safeHours = Number.isFinite(requestedHours)
+        ? Math.min(Math.max(requestedHours, 0), POST_DELAY_MAX_HOURS)
+        : 0;
+
+    const baseTime = new Date(Math.max(
+        now.getTime() + safeHours * 60 * 60 * 1000,
+        now.getTime() + TWENTY_MINUTES_IN_MS
+    ));
+
+    return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
+}
+
 export function getScheduleHintText(meta = {}) {
     return [
         meta.placeholder,
