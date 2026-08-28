@@ -13,6 +13,7 @@ import {
     computeDelayedFirstTime,
     POST_DELAY_MIN_MINUTES,
     POST_DELAY_MAX_MINUTES,
+    SCHEDULE_MIN_LEAD_MINUTES,
     SCHEDULE_SLOT_MINUTES,
     STUDIO_MAX_PENDING_DAYS,
     parseScheduleValue,
@@ -4177,15 +4178,16 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             if (existingTime) {
                 hasExistingSchedule = true;
 
-                // Mốc cũ có thể vừa trôi qua trong lúc trang đang load. Cộng dồn
-                // từ một mốc quá khứ sẽ cho ra giờ TikTok không nhận, nên kéo về
-                // sàn +20 phút giống các nhánh lên lịch khác.
-                const earliestBase = new Date(Date.now() + 20 * 60 * 1000);
-                if (existingTime.getTime() < earliestBase.getTime()) {
-                    log(`Existing schedule ${existingTime.toISOString()} is already past/too close. Clamping base to ${earliestBase.toISOString()}.`);
-                    lastScheduledTime = earliestBase;
-                } else {
-                    lastScheduledTime = existingTime;
+                // Giữ nguyên mốc thật của loạt cũ, kể cả khi nó đã trôi qua.
+                // Kéo mốc gốc về now + 20 phút là làm hỏng nhịp: loạt 9:15 /
+                // 9:30 / 9:45 chạy lúc 9:16 sẽ lấy gốc 9:36 rồi cộng interval
+                // thành 10:00, bỏ phí hai mốc và lệch hẳn khỏi lưới giờ cũ.
+                // Việc bỏ qua những mốc không còn kịp để dành cho
+                // computeAutoIncrementTime, nơi nó bỏ theo từng nhịp trọn vẹn.
+                lastScheduledTime = existingTime;
+
+                if (existingTime.getTime() < Date.now()) {
+                    log(`Existing schedule ${existingTime.toISOString()} has already passed. Keeping it as the rhythm anchor; slots too close to now will be skipped a whole interval at a time.`);
                 }
 
                 log(`Existing schedule detected. ALL ${uploadLimit} video(s) will be scheduled after ${lastScheduledTime.toISOString()}.`);
@@ -4820,8 +4822,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         // Chưa có mốc nào nghĩa là kênh sạch lịch và đang hẹn giờ:
                         // video đầu lấy now + số phút đã cài. Từ video 2 trở đi nối
                         // tiếp bình thường theo schedule_interval của profile.
+                        //
+                        // minLeadMinutes để loạt nối tiếp bỏ qua trọn nhịp những
+                        // mốc đã trôi qua hoặc còn quá sát, giữ nguyên nhịp cũ.
+                        // Dùng hàng rào kỹ thuật, không dùng sàn của ô cài đặt.
                         lastScheduledTime = lastScheduledTime
-                            ? computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin })
+                            ? computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin, now: new Date(), minLeadMinutes: SCHEDULE_MIN_LEAD_MINUTES })
                             : computeDelayedFirstTime({ delayMinutes: postDelayMinutes });
                         const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                         const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});

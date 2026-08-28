@@ -333,6 +333,45 @@ test('computeDelayedFirstTime caps the delay at the 10 days TikTok allows', () =
     assert.equal(scheduled.toISOString(), '2026-04-22T09:20:00.000Z');
 });
 
+test('computeAutoIncrementTime skips whole intervals instead of leaving the rhythm', () => {
+    // Loạt cũ 9:15 / 9:30 / 9:45. Chạy lúc 9:16 thì 9:30 chỉ còn 14 phút nữa,
+    // không kịp mốc tối thiểu, nên phải bỏ đúng một nhịp sang 9:45 -- chứ không
+    // lấy now + 20 phút làm gốc mới rồi ra 10:00 như trước.
+    const existing = new Date(2026, 7, 28, 9, 15);
+    const opts = { lastScheduledTime: existing, intervalMinutes: 15, minLeadMinutes: 15 };
+
+    const at = (h, m) => computeAutoIncrementTime({ ...opts, now: new Date(2026, 7, 28, h, m) });
+
+    assert.equal(localIso(at(9, 5)), '2026-08-28 09:30');
+    assert.equal(localIso(at(9, 10)), '2026-08-28 09:30');
+    assert.equal(localIso(at(9, 16)), '2026-08-28 09:45');
+    assert.equal(localIso(at(9, 31)), '2026-08-28 10:00');
+});
+
+test('computeAutoIncrementTime keeps a long-overdue batch on its original rhythm', () => {
+    // Mốc trễ hai ngày vẫn phải rơi vào đúng phút của nhịp cũ, và phải nhảy
+    // thẳng chứ không cộng dồn từng nhịp một.
+    const existing = new Date(2026, 7, 26, 9, 15);
+    const now = new Date(2026, 7, 28, 9, 16);
+
+    const next = computeAutoIncrementTime({
+        lastScheduledTime: existing, intervalMinutes: 15, now, minLeadMinutes: 15
+    });
+
+    assert.equal(localIso(next), '2026-08-28 09:45');
+});
+
+test('computeAutoIncrementTime leaves past slots alone when no minimum lead is asked for', () => {
+    // Mặc định minLeadMinutes = 0, để nhánh auto-increment cũ giữ nguyên hành vi.
+    const existing = new Date(2026, 7, 28, 9, 15);
+    const now = new Date(2026, 7, 28, 9, 16);
+
+    assert.equal(
+        localIso(computeAutoIncrementTime({ lastScheduledTime: existing, intervalMinutes: 15, now })),
+        '2026-08-28 09:30'
+    );
+});
+
 test('computeAutoIncrementTime chains from a delayed first slot', () => {
     // Video 2 trở đi nối tiếp từ giờ đã hẹn của video 1, không quay về now+20p.
     const now = new Date('2026-04-12T09:16:33.336Z');

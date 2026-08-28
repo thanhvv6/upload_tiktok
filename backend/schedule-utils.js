@@ -38,14 +38,29 @@ export function computeNextScheduledTime({ index, lastScheduledTime, intervalMin
     return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
 }
 
-export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 5, now = new Date() }) {
+/**
+ * Mốc kế tiếp của một loạt lịch: mốc cuối + đúng một interval.
+ *
+ * `minLeadMinutes` > 0 thì mốc kế tiếp nào còn quá sát hiện tại sẽ bị bỏ qua
+ * bằng cách cộng thêm nguyên nhịp, chứ không phải rời khỏi nhịp. Loạt cũ đang ở
+ * 9:15/9:30/9:45 mà chạy lúc 9:16 sẽ ra 9:45 -- nhịp cũ, chỉ bỏ mốc không kịp --
+ * thay vì 10:00 như khi lấy now + 20 phút làm mốc gốc mới.
+ */
+export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 5, now = new Date(), minLeadMinutes = 0 }) {
     const stepMin = Number(intervalMinutes) || 5;
     const stepMs = stepMin * 60 * 1000;
     const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
 
-    const baseTime = lastScheduledTime
+    let baseTime = lastScheduledTime
         ? lastScheduledTime.getTime() + stepMs
         : now.getTime() + TWENTY_MINUTES_IN_MS;
+
+    // Nhảy thẳng tới nhịp hợp lệ đầu tiên thay vì cộng dồn từng bước: một loạt
+    // trễ vài ngày sẽ cần hàng nghìn vòng lặp mới thoát.
+    const earliest = now.getTime() + minLeadMinutes * 60 * 1000;
+    if (lastScheduledTime && baseTime < earliest) {
+        baseTime += Math.ceil((earliest - baseTime) / stepMs) * stepMs;
+    }
 
     return ceilToSlot(baseTime);
 }
@@ -73,6 +88,23 @@ export const POST_DELAY_MAX_MINUTES = 10 * 24 * 60;
  */
 export const STUDIO_MAX_PENDING_DAYS = 11;
 
+/**
+ * Mức lead tối thiểu code tự bảo đảm khi chọn mốc trong một loạt đã có.
+ *
+ * Khác hẳn POST_DELAY_MIN_MINUTES: con số kia là giới hạn dưới của ô cài đặt,
+ * do người dùng quyết; con số này là hàng rào kỹ thuật để TikTok chịu nhận mốc.
+ * Trộn hai thứ làm một chính là lỗi của mốc "now + 20 phút" cũ.
+ *
+ * Bằng 10 cho khớp sàn của ô cài đặt: cùng một ràng buộc của TikTok thì không
+ * có lý do gì hai đường lại chừa biên khác nhau. Để 20 như trước thì mỗi lượt
+ * chạy lỡ nhịp sẽ bỏ phí thêm một mốc mà không đổi lại được gì -- loạt 9:15 với
+ * interval 10 chạy lúc 9:12 phải bỏ mốc 9:25 dù nó còn cách 13 phút.
+ *
+ * Mốc được tính lúc điền form còn TikTok kiểm lúc bấm đăng; đo trên log thì
+ * khoảng đó là 11s (p50), 22s (p99), 97s (max) -- không đáng kể so với biên
+ * giữa 10 phút và ngưỡng thật.
+ */
+export const SCHEDULE_MIN_LEAD_MINUTES = 10;
 
 /**
  * Mốc cho video đầu tiên khi bật hẹn giờ đăng: now + số phút đã cài, giữ một
