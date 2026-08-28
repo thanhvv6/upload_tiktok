@@ -3972,7 +3972,7 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
             log(`[Content Check ${attempt}/${maxAttempts}] Navigating to TikTok Studio Content...`);
             await page.goto('https://www.tiktok.com/tiktokstudio/content', {
                 waitUntil: 'domcontentloaded',
-                timeout: 30000
+                timeout: STUDIO_CONTENT_GOTO_TIMEOUT
             });
             await page.waitForTimeout(3000);
             await dismissPopups(page).catch(() => null);
@@ -3983,7 +3983,7 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
 
             await page.waitForSelector(
                 `${STUDIO_STAGE_LABEL}, ${STUDIO_PAGE_RENDERED}, ${STUDIO_EMPTY_STATE}`,
-                { timeout: 15000, state: 'attached' }
+                { timeout: STUDIO_CONTENT_RENDER_TIMEOUT, state: 'attached' }
             );
 
             const labels = page.locator(STUDIO_STAGE_LABEL);
@@ -3991,6 +3991,14 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
 
             // Quét các dòng đầu danh sách chứ không chỉ dòng trên cùng, và lấy mốc
             // xa nhất, để lịch mới luôn nối tiếp phía sau bất kể TikTok sắp xếp
+// Trang Content phải tải xong cả chục bundle JS của creator-center trước khi
+// DOMContentLoaded nổ. Qua proxy của profile, mỗi bundle mất 4-12s (đo được
+// ~39 KB/s so với ~86 KB/s đi thẳng), nên mốc 30s cũ hết giờ trước khi trang kịp
+// dựng và cả lượt upload chết oan dù proxy vẫn sống.
+const STUDIO_CONTENT_GOTO_TIMEOUT = 90000;
+// Danh sách video được React dựng sau khi XHR trả về — cũng đi qua đúng đường
+// truyền chậm đó, nên nới theo cùng lý do.
+const STUDIO_CONTENT_RENDER_TIMEOUT = 45000;
             // các video đã lên lịch theo thứ tự nào.
             let latest = null;
             const rowsToScan = Math.min(labelCount, STUDIO_ROWS_SCANNED);
