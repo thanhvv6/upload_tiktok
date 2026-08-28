@@ -13,6 +13,7 @@ import {
     computeDelayedFirstTime,
     POST_DELAY_MIN_HOURS,
     POST_DELAY_MAX_HOURS,
+    STUDIO_MAX_PENDING_DAYS,
     parseScheduleValue,
     parseStudioScheduleLabel,
     formatScheduleValue,
@@ -4011,6 +4012,13 @@ const STUDIO_CONTENT_GOTO_TIMEOUT = 90000;
 const STUDIO_CONTENT_RENDER_TIMEOUT = 45000;
             // các video đã lên lịch theo thứ tự nào.
             let latest = null;
+            // Mốc vượt trần là dấu hiệu việc đọc nhãn đang hỏng, không phải một
+            // lịch thật. Bỏ riêng dòng đó không đủ: nếu đọc sai một dòng thì
+            // những dòng còn lại cũng đáng ngờ, mà đoán sai chỗ loạt cũ đang nằm
+            // thì lịch mới đè lên nó. Nên ghi nhận rồi ném lỗi ở cuối, để vòng
+            // thử lại chạy và cuối cùng dừng hẳn upload — hỏng ồn ào, không im.
+            let outOfRangeLabel = null;
+            const pendingLimitMs = STUDIO_MAX_PENDING_DAYS * 24 * 60 * 60 * 1000;
             const rowsToScan = Math.min(labelCount, STUDIO_ROWS_SCANNED);
             for (let row = 0; row < rowsToScan; row++) {
                 const label = labels.nth(row);
@@ -4028,8 +4036,18 @@ const STUDIO_CONTENT_RENDER_TIMEOUT = 45000;
                     continue;
                 }
 
+                if (parsed.getTime() - Date.now() > pendingLimitMs) {
+                    log(`[Content Check] Label "${timeText}" parsed to ${parsed.toISOString()}, further out than TikTok allows. Treating the read as broken.`);
+                    outOfRangeLabel = timeText;
+                    continue;
+                }
+
                 log(`[Content Check] Pending schedule: "${timeText}" -> ${parsed.toISOString()}`);
                 if (!latest || parsed.getTime() > latest.getTime()) latest = parsed;
+            }
+
+            if (outOfRangeLabel) {
+                throw new Error(`Schedule label "${outOfRangeLabel}" is further out than TikTok allows, so the content list cannot be trusted.`);
             }
 
             if (latest) {

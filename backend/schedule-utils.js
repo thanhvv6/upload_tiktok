@@ -31,6 +31,16 @@ export const POST_DELAY_MIN_HOURS = 0.5;
 export const POST_DELAY_MAX_HOURS = 240;
 
 /**
+ * Mốc chờ đọc từ TikTok Studio mà xa hơn ngần này thì chắc chắn là đọc hỏng.
+ *
+ * TikTok không nhận lịch quá 10 ngày, nên không dòng nào trên trang Content có
+ * thể nằm xa hơn thế. Cộng thêm một ngày dung sai cho lệch múi giờ và đồng hồ
+ * máy. Không có trần này thì một mốc rác trở thành neo, và mọi video mới lặng lẽ
+ * xếp hàng sau nó.
+ */
+export const STUDIO_MAX_PENDING_DAYS = 11;
+
+/**
  * Mốc cho video đầu tiên khi bật hẹn giờ đăng: now + số giờ đã cài, vẫn giữ
  * sàn +20 phút và làm tròn lên bội số interval như hai hàm lên lịch còn lại,
  * để video 2 trở đi nối tiếp trên cùng một lưới thời gian.

@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    POST_DELAY_MAX_HOURS,
+    STUDIO_MAX_PENDING_DAYS,
     computeNextScheduledTime,
     computeAutoIncrementTime,
     computeDelayedFirstTime,
@@ -147,6 +149,18 @@ test('parseScheduleValue returns null on missing or unreadable input', () => {
     assert.equal(parseScheduleValue('', '00:10'), null);
     assert.equal(parseScheduleValue('2026-08-18', ''), null);
     assert.equal(parseScheduleValue('2026-08-18', 'khong co gio'), null);
+});
+
+test('STUDIO_MAX_PENDING_DAYS leaves room for every schedule TikTok accepts', () => {
+    // Trần dùng để phát hiện đọc nhãn hỏng. Nó phải nằm ngoài mọi mốc hợp lệ,
+    // nếu không một lịch thật hẹn sát 10 ngày sẽ bị coi là rác và chặn upload.
+    const maxLegitDays = POST_DELAY_MAX_HOURS / 24;
+
+    assert.equal(maxLegitDays, 10);
+    assert.ok(
+        STUDIO_MAX_PENDING_DAYS > maxLegitDays,
+        `trần ${STUDIO_MAX_PENDING_DAYS} ngày không được nhỏ hơn mốc hợp lệ xa nhất ${maxLegitDays} ngày`
+    );
 });
 
 // --- parseStudioScheduleLabel -----------------------------------------------
