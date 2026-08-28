@@ -14,7 +14,7 @@ export function createJob(profileIds) {
     status: 'running',
     profileIds: [...profileIds],
     results: new Map(),
-    profileMeta: new Map(), // profileId -> { followers, hearts }
+    profileMeta: new Map(), // profileId -> { followers }
     clients: new Set(),
     aborted: false,
     createdAt: Date.now(),
@@ -50,7 +50,9 @@ export function appendResult(jobId, profileId, video) {
   job.results.get(profileId).push(video);
 }
 
-// Account-level numbers scraped once per profile (followers, total hearts)
+// Số liệu cấp tài khoản, quét một lần cho mỗi profile. Hiện chỉ còn follower:
+// tổng tim trọn đời đã bỏ vì trang Studio analytics không cung cấp, và không
+// nơi nào đọc tới nó.
 export function setProfileMeta(jobId, profileId, meta) {
   const job = jobs.get(jobId);
   if (!job || !meta) return;

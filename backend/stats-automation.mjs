@@ -12,6 +12,10 @@ export const NEW_FOLLOWER_KEYS = [
   'new_follower_num', 'new_follower_count', 'new_followers', 'new_follower',
   'follower_increase', 'net_follower_num', 'follower_num_increase',
 ];
+// Tổng follower hiện tại của kênh, đọc từ /aweme/v2/data/insight/ trên trang
+// Studio analytics. Tách hẳn khỏi NEW_FOLLOWER_KEYS: những khoá kia là số
+// follower tăng thêm của riêng một video, không phải con số net của cả kênh.
+export const FOLLOWER_TOTAL_KEYS = ['follower_num', 'follower_count', 'total_follower_num'];
 // Chuỗi TikTok hiển thị thay cho analytics khi video chưa công khai (đang chờ
 // lịch). Hai hàm chạy-trong-trang bên dưới đều cần, mà page.evaluate không mang
 // theo biến ngoài, nên giữ ở dạng nguồn regex để truyền vào như tham số.
@@ -75,8 +79,8 @@ export async function runStatsForProfile(profile, jobId, ctx) {
 
     const videos = await discoverAllVideos(page, log, isAborted, jobId, statsLimitDate);
 
-    // Account-level numbers (current followers / total hearts) — best effort,
-    // a failure here must never abort the per-video stats run.
+    // Số follower của kênh — best effort, hỏng ở đây không được phép làm
+    // gãy lượt quét từng video.
     const account = await fetchAccountStats(page, profile, log);
     if (typeof setProfileMeta === 'function') {
       setProfileMeta(jobId, profile.id, account);
@@ -498,84 +502,88 @@ export function collectMetricKeys(payloads) {
   return [...keys];
 }
 
-// ── Account-level stats ──────────────────────────────────────────────────────
-async function fetchAccountStats(page, profile, log) {
-  const empty = { followers: null, hearts: null };
-  try {
-    const handle = await resolveHandle(page, profile.name);
-    if (!handle) {
-      log('Could not resolve TikTok handle, skipping account stats');
-      return empty;
+// Chỉ số cấp tài khoản không đi qua deepScan được: TikTok bọc chúng thành
+// {status, value}, nên lá số duy nhất deepScan nhìn thấy mang key "value" và
+// tên thật của chỉ số đã mất. Hàm này giữ lại tên cha, và chỉ nhận value khi
+// status là 0 — status 2 nghĩa là TikTok không có dữ liệu cho khoảng đó.
+export function pickAccountMetric(payloads, wantedKeys, depthLimit = 8) {
+  const wanted = wantedKeys.map((k) => k.toLowerCase());
+
+  const unwrap = (node) => {
+    if (typeof node === 'number' && Number.isFinite(node)) return node;
+    if (typeof node === 'string' && /^\d+$/.test(node)) return Number(node);
+    if (node && typeof node === 'object' && !Array.isArray(node)
+      && typeof node.value === 'number' && Number.isFinite(node.value)
+      && (node.status == null || node.status === 0)) return node.value;
+    return null;
+  };
+
+  const walk = (node, depth) => {
+    if (!node || typeof node !== 'object' || depth > depthLimit) return null;
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const hit = walk(item, depth + 1);
+        if (hit !== null) return hit;
+      }
+      return null;
     }
-
-    log(`Reading account stats for @${handle}`);
-    await page.goto(`https://www.tiktok.com/@${handle}`, {
-      waitUntil: 'domcontentloaded', timeout: 20000,
-    });
-    await page.waitForTimeout(2500);
-
-    const stats = await page.evaluate(() => {
-      const parseCompact = (raw) => {
-        const text = String(raw || '').replace(/\u00a0/g, ' ').replace(/,/g, '').trim();
-        const match = text.match(/^(\d+(?:\.\d+)?)\s*([KMB])?$/i);
-        if (!match) return null;
-        const mult = { k: 1e3, m: 1e6, b: 1e9 }[match[2]?.toLowerCase()] || 1;
-        return Math.round(parseFloat(match[1]) * mult);
-      };
-
-      let followers = null;
-      let hearts = null;
-
-      // Exact numbers live in the rehydration blob; the visible DOM is rounded.
-      try {
-        const raw = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__')?.textContent;
-        if (raw) {
-          const scope = JSON.parse(raw)?.__DEFAULT_SCOPE__ || {};
-          const userStats = scope['webapp.user-detail']?.userInfo?.stats;
-          if (userStats) {
-            followers = userStats.followerCount ?? null;
-            hearts = userStats.heartCount ?? userStats.diggCount ?? null;
-          }
-        }
-      } catch (_) {}
-
-      if (followers === null) {
-        followers = parseCompact(document.querySelector('[data-e2e="followers-count"]')?.textContent);
+    // Khớp tên ngay tại tầng này trước khi đi sâu, để một khoá đúng ở gốc
+    // không bị khoá trùng tên nằm sâu hơn qua mặt.
+    for (const [key, value] of Object.entries(node)) {
+      if (wanted.includes(key.toLowerCase())) {
+        const hit = unwrap(value);
+        if (hit !== null) return hit;
       }
-      if (hearts === null) {
-        hearts = parseCompact(document.querySelector('[data-e2e="likes-count"]')?.textContent);
-      }
+    }
+    for (const value of Object.values(node)) {
+      const hit = walk(value, depth + 1);
+      if (hit !== null) return hit;
+    }
+    return null;
+  };
 
-      return { followers, hearts };
-    });
-
-    log(`  account: followers=${stats.followers ?? '?'} hearts=${stats.hearts ?? '?'}`);
-    return stats;
-  } catch (err) {
-    log(`Account stats unavailable: ${err.message}`);
-    return empty;
+  for (const payload of payloads) {
+    const hit = walk(payload, 0);
+    if (hit !== null) return hit;
   }
+  return null;
 }
 
-// The profile name is normally the TikTok handle, but prefer whatever the
-// logged-in session reports so a renamed folder does not send us to a 404.
-async function resolveHandle(page, fallbackName) {
+// ── Account-level stats ──────────────────────────────────────────────────────
+//
+// Trước đây hàm này mở https://www.tiktok.com/@handle để đọc followerCount và
+// heartCount từ blob rehydration. Đó là web app chính, không phải Studio, và
+// với tài khoản đang bị TikTok gắn cờ xác minh thì mỗi lần ghé là một lần phiên
+// bị hạ xuống còn 6 tiếng kèm xoá sạch tt-target-idc — đo được trực tiếp trên
+// máy: cookie vừa tiêm lúc 00:49:21 thì 00:49:32 đã bị thay. Studio không đi
+// qua cổng kiểm tra đó, nên số liệu giờ lấy từ trang analytics của Studio.
+//
+// Đổi lại, Studio không có tổng tim trọn đời — chỉ có lượt thích theo khoảng
+// thời gian. Bỏ luôn `hearts`: Excel lấy cột "Tổng Tim" bằng cách cộng tim của
+// từng video, còn card "Tổng tim" trên giao diện đã gỡ ở 9267b1a, nên không ai
+// đọc con số đó nữa.
+async function fetchAccountStats(page, profile, log) {
+  const sniffer = attachAnalyticsSniffer(page);
   try {
-    const detected = await page.evaluate(() => {
-      try {
-        const raw = document.getElementById('__UNIVERSAL_DATA_FOR_REHYDRATION__')?.textContent;
-        if (raw) {
-          const scope = JSON.parse(raw)?.__DEFAULT_SCOPE__ || {};
-          const user = scope['webapp.app-context']?.user
-            || scope['webapp.user-detail']?.userInfo?.user;
-          if (user?.uniqueId) return user.uniqueId;
-        }
-      } catch (_) {}
-      const anchor = document.querySelector('a[href^="/@"], a[href*="tiktok.com/@"]');
-      const match = anchor?.getAttribute('href')?.match(/@([^/?#]+)/);
-      return match ? match[1] : null;
-    });
-    if (detected) return detected;
-  } catch (_) {}
-  return fallbackName || null;
+    log('Reading account stats from TikTok Studio analytics');
+    await page.goto(ANALYTICS_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+    // Con số không nằm trong HTML mà bay về qua XHR /aweme/v2/data/insight/,
+    // và trang bắn nhiều lượt insight khác nhau — cái mang follower_num không
+    // phải lượt đầu. Nên chờ tới khi bắt được thay vì ngủ một khoảng cố định.
+    const deadline = Date.now() + 15000;
+    let followers = null;
+    while (followers === null && Date.now() < deadline) {
+      await page.waitForTimeout(500);
+      followers = pickAccountMetric(sniffer.take(), FOLLOWER_TOTAL_KEYS);
+    }
+
+    log(`  account: followers=${followers ?? '?'}`);
+    return { followers };
+  } catch (err) {
+    log(`Account stats unavailable: ${err.message}`);
+    return { followers: null };
+  } finally {
+    sniffer.detach();
+  }
 }
