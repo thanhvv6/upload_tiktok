@@ -3203,7 +3203,7 @@ const App = () => {
                             type="number"
                             className="input"
                             style={{ width: '120px' }}
-                            min="10"
+                            min="15"
                             max="14400"
                             // Bậc 5 vì mọi mốc lịch đều rơi vào bội số 5 phút:
                             // ô giờ của TikTok là time picker và chỉ có bằng
@@ -3215,13 +3215,13 @@ const App = () => {
                             onBlur={(e) => {
                               const minutes = Number(e.target.value);
                               const safe = Number.isFinite(minutes)
-                                ? Math.min(Math.max(Math.ceil(minutes / 5) * 5, 10), 14400)
+                                ? Math.min(Math.max(Math.ceil(minutes / 5) * 5, 15), 14400)
                                 : 60;
                               setConfig({ ...config, postDelayMinutes: safe });
                             }}
                           />
                           <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                            phút &mdash; bội số của 5, tối thiểu 10, tối đa 14400 (10 ngày)
+                            phút &mdash; bội số của 5, tối thiểu 15, tối đa 14400 (10 ngày)
                           </span>
                         </div>
                         {postDelayPreview() && (

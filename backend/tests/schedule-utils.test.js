@@ -246,14 +246,14 @@ test('computeDelayedFirstTime delays by the configured minutes and rounds up to 
     assert.equal(scheduled.toISOString(), '2026-04-12T10:20:00.000Z');
 });
 
-test('computeDelayedFirstTime accepts a delay as short as 10 minutes', () => {
+test('computeDelayedFirstTime accepts a delay as short as 15 minutes', () => {
     // Mốc 15 phút là sàn của setting: phải đi thẳng qua, không bị kéo lên 20
     // phút như hai hàm lên lịch còn lại.
     const now = new Date('2026-04-12T09:16:33.336Z');
 
     assert.equal(
-        computeDelayedFirstTime({ delayMinutes: 10, now }).toISOString(),
-        '2026-04-12T09:30:00.000Z'
+        computeDelayedFirstTime({ delayMinutes: 15, now }).toISOString(),
+        '2026-04-12T09:35:00.000Z'
     );
     assert.equal(
         computeDelayedFirstTime({ delayMinutes: 30, intervalMinutes: 10, now }).toISOString(),
@@ -267,22 +267,22 @@ test('computeDelayedFirstTime accepts a delay as short as 10 minutes', () => {
     );
 });
 
-test('computeDelayedFirstTime keeps the +10 minute floor TikTok needs', () => {
-    // Delay nhỏ hơn mốc TikTok chấp nhận vẫn phải rơi về sàn +10 phút, rồi làm
-    // tròn lên mốc 5 phút: 09:16:33 + 10 phút là 09:26:33 -> 09:30.
+test('computeDelayedFirstTime keeps the +15 minute floor TikTok needs', () => {
+    // Delay nhỏ hơn mốc TikTok chấp nhận vẫn phải rơi về sàn +15 phút, rồi làm
+    // tròn lên mốc 5 phút: 09:16:33 + 15 phút là 09:31:33 -> 09:35.
     const now = new Date('2026-04-12T09:16:33.336Z');
 
     assert.equal(
         computeDelayedFirstTime({ delayMinutes: 5, now }).toISOString(),
-        '2026-04-12T09:30:00.000Z'
+        '2026-04-12T09:35:00.000Z'
     );
     assert.equal(
         computeDelayedFirstTime({ delayMinutes: 0, now }).toISOString(),
-        '2026-04-12T09:30:00.000Z'
+        '2026-04-12T09:35:00.000Z'
     );
     assert.equal(
         computeDelayedFirstTime({ delayMinutes: 'x', now }).toISOString(),
-        '2026-04-12T09:30:00.000Z'
+        '2026-04-12T09:35:00.000Z'
     );
 });
 

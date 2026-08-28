@@ -68,14 +68,19 @@ export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 
 // Hẹn giờ đăng (setting toàn cục): TikTok chỉ nhận lịch trong vòng 10 ngày và
 // từ chối mốc quá sát hiện tại, nên số phút người dùng nhập bị kẹp hai đầu.
 //
-// Sàn 10 phút là con số đã chạy thật lâu nay, không phải ước lượng. Trong log
-// có một lượt đặt lịch cách 7,5 phút và TikTok nhận (Post confirmed, lấy được
-// video ID), còn lượt cách 1,6 phút thì bấm Post 10 lần không xong. Ngưỡng thật
-// nằm giữa hai mốc đó, nên 10 vẫn còn biên.
+// Sàn 15 phút, và nó đã được thử ở mức thấp hơn rồi hỏng. Hạ xuống 10 thì lượt
+// chạy thật xin mốc 13:30 trong khi TikTok đề xuất 13:35: time picker treo 30
+// giây (lần duy nhất trong 4524 lượt, gần như chắc chắn vì TikTok khoá những
+// dòng dưới ngưỡng), gõ tay vào thì TikTok báo lỗi, phải sửa tay thành 13:35.
 //
-// Đừng suy sàn từ giờ TikTok tự đề xuất khi mở form (đo được 14,9-19,9 phút):
-// đó là gợi ý mặc định, không phải mức tối thiểu nó chấp nhận.
-export const POST_DELAY_MIN_MINUTES = 10;
+// 15 cũng chính là quy tắc của TikTok: giờ nó tự đề xuất khi mở form luôn nằm
+// trong dải 14,9-19,9 phút (511 mẫu), tức "now + 15 rồi làm tròn lên mốc 5".
+// computeDelayedFirstTime bên dưới làm đúng như vậy.
+//
+// Đừng nhầm với schedule_interval: khoảng cách giữa các video vẫn để 10 phút
+// được, đó là con số khác. Trong 4490 lịch đã đặt, lead chưa bao giờ rơi vào
+// dải 10-15 phút -- vùng đó chưa từng chạy được.
+export const POST_DELAY_MIN_MINUTES = 15;
 export const POST_DELAY_MAX_MINUTES = 10 * 24 * 60;
 
 /**
@@ -95,25 +100,24 @@ export const STUDIO_MAX_PENDING_DAYS = 11;
  * do người dùng quyết; con số này là hàng rào kỹ thuật để TikTok chịu nhận mốc.
  * Trộn hai thứ làm một chính là lỗi của mốc "now + 20 phút" cũ.
  *
- * Bằng 10 cho khớp sàn của ô cài đặt: cùng một ràng buộc của TikTok thì không
- * có lý do gì hai đường lại chừa biên khác nhau. Để 20 như trước thì mỗi lượt
- * chạy lỡ nhịp sẽ bỏ phí thêm một mốc mà không đổi lại được gì -- loạt 9:15 với
- * interval 10 chạy lúc 9:12 phải bỏ mốc 9:25 dù nó còn cách 13 phút.
+ * Bằng 15 cho khớp sàn của ô cài đặt: cùng một ràng buộc của TikTok thì không
+ * có lý do gì hai đường lại chừa biên khác nhau. Từng để 10 và TikTok đã từ
+ * chối một mốc thật -- xem ghi chú ở POST_DELAY_MIN_MINUTES.
  *
  * Mốc được tính lúc điền form còn TikTok kiểm lúc bấm đăng; đo trên log thì
- * khoảng đó là 11s (p50), 22s (p99), 97s (max) -- không đáng kể so với biên
- * giữa 10 phút và ngưỡng thật.
+ * khoảng đó là 11s (p50), 22s (p99), 97s (max). Việc làm tròn lên mốc 5 phút
+ * thường bù thêm 0-5 phút nữa, nên biên thực tế rộng hơn 15 một chút.
  */
-export const SCHEDULE_MIN_LEAD_MINUTES = 10;
+export const SCHEDULE_MIN_LEAD_MINUTES = 15;
 
 /**
  * Mốc cho video đầu tiên khi bật hẹn giờ đăng: now + số phút đã cài, giữ một
  * cái sàn rồi làm tròn lên mốc 5 phút.
  *
- * Sàn ở đây là POST_DELAY_MIN_MINUTES (10 phút), sát hơn mốc 20 phút mà
+ * Sàn ở đây là POST_DELAY_MIN_MINUTES (15 phút), sát hơn mốc 20 phút mà
  * computeNextScheduledTime còn giữ. Được phép sát hơn vì mốc này được tính ngay
- * trước khi điền vào form, tức là sau khi video đã upload xong, nên 10 phút là
- * 10 phút thật tính từ lúc gửi -- khác hàm kia, vốn tính từ một thời điểm còn
+ * trước khi điền vào form, tức là sau khi video đã upload xong, nên 15 phút là
+ * 15 phút thật tính từ lúc gửi -- khác hàm kia, vốn tính từ một thời điểm còn
  * cách lúc gửi vài phút xử lý video.
  *
  * Không nhận interval nữa: mốc đầu chỉ phụ thuộc số phút đã hẹn, còn khoảng
