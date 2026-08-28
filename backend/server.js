@@ -3612,7 +3612,17 @@ async function fillScheduleInput(page, inputMeta, value, label, log) {
 
                 await input.click();
                 await page.waitForTimeout(500);
-                return;
+
+                // Danh sách phút của picker không chắc chứa mọi giá trị: mốc lẻ
+                // như :27 có thể không có dòng nào để click, và cú click ở trên
+                // im lặng không làm gì. Trả về ngay lúc đó là báo thành công cho
+                // một ô giờ vẫn đang sai. Đọc lại ô rồi mới quyết định.
+                const filled = await input.inputValue().catch(() => '');
+                const same = (a, b) => String(a).replace(/\s+/g, '').toUpperCase()
+                    === String(b).replace(/\s+/g, '').toUpperCase();
+                if (same(filled, value)) return;
+
+                log(`Time picker left "${filled || '<empty>'}" instead of "${value}". Falling back to typing.`);
             }
         } catch (e) {
             log(`Time picker interaction failed: ${e.message}. Falling back to fill.`);
