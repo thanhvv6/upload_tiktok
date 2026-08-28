@@ -190,11 +190,6 @@ const MONTH_ABBREVIATIONS = [
     'jul', 'aug', 'sep', 'oct', 'nov', 'dec'
 ];
 
-// TikTok chỉ cho lên lịch tối đa 10 ngày. Một nhãn không có năm mà đã lùi quá
-// mốc này so với hiện tại thì gần như chắc chắn là lịch của năm sau (trường hợp
-// đứng cuối tháng 12 nhìn sang đầu tháng 1).
-const STALE_LABEL_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
-
 function readMonthAndDay(datePart) {
     const monthIndex = MONTH_ABBREVIATIONS.findIndex(
         (abbr) => new RegExp(`\\b${abbr}`, 'i').test(datePart)
@@ -272,9 +267,23 @@ export function parseStudioScheduleLabel(text, now = new Date()) {
 
     if (explicitYearMatch) return build(Number(explicitYearMatch[1]));
 
-    const sameYear = build(now.getFullYear());
-    if (sameYear && sameYear.getTime() >= now.getTime() - STALE_LABEL_GRACE_MS) {
-        return sameYear;
-    }
-    return build(now.getFullYear() + 1) || sameYear;
+    // Nhãn thiếu năm chỉ có thể là một mốc quanh hiện tại: TikTok cho hẹn xa
+    // nhất 10 ngày, còn lịch đã trễ thì nằm lại trong quá khứ gần. Nên chọn năm
+    // đưa mốc GẦN hiện tại nhất, xét cả năm trước và năm sau.
+    //
+    // Cách cũ mặc định đẩy sang năm sau khi mốc lùi quá một tuần, nên một lịch
+    // trễ 8 ngày bị đọc thành năm sau và kéo cả loạt đăng đi gần 365 ngày. Đối
+    // xứng lại cũng vá luôn chiều ngược: nhãn "Dec 27" đọc vào đầu tháng 1 giờ
+    // ra tháng 12 vừa rồi, chứ không phải tháng 12 gần một năm nữa.
+    const candidates = [
+        build(now.getFullYear() - 1),
+        build(now.getFullYear()),
+        build(now.getFullYear() + 1)
+    ].filter(Boolean);
+    if (candidates.length === 0) return null;
+
+    const distance = (date) => Math.abs(date.getTime() - now.getTime());
+    return candidates.reduce((best, candidate) =>
+        distance(candidate) < distance(best) ? candidate : best
+    );
 }

@@ -182,6 +182,25 @@ test('parseStudioScheduleLabel strips the "Scheduled" prefix TikTok puts on the 
     assert.equal(localIso(parseStudioScheduleLabel('Scheduled for Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
     assert.equal(localIso(parseStudioScheduleLabel('Scheduled Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
 });
+test('parseStudioScheduleLabel rolls back a year for a December label read in January', () => {
+    // Chiều ngược của mốc giao thừa: đứng đầu tháng 1 nhìn lại lịch tháng 12 vừa
+    // rồi, phải ra năm trước chứ không phải tháng 12 gần một năm nữa.
+    const now = new Date(2027, 0, 2, 9, 0);
+
+    assert.equal(localIso(parseStudioScheduleLabel('Dec 27, 9:00 AM', now)), '2026-12-27 09:00');
+});
+
+test('parseStudioScheduleLabel keeps a long-overdue label in the current year', () => {
+    // Lịch trễ vẫn là lịch của năm nay. Trước đây nhãn lùi quá 7 ngày bị đọc
+    // thành năm sau, kéo cả loạt đăng nhảy đi gần 365 ngày.
+    const now = new Date(2026, 7, 28, 10, 0);
+
+    assert.equal(localIso(parseStudioScheduleLabel('Aug 27, 7:30 AM', now)), '2026-08-27 07:30');
+    assert.equal(localIso(parseStudioScheduleLabel('Aug 20, 7:30 AM', now)), '2026-08-20 07:30');
+    assert.equal(localIso(parseStudioScheduleLabel('Aug 10, 7:30 AM', now)), '2026-08-10 07:30');
+    assert.equal(localIso(parseStudioScheduleLabel('Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
+});
+
 
 test('parseStudioScheduleLabel reads midnight and noon correctly', () => {
     const now = new Date(2026, 6, 10, 9, 0);
