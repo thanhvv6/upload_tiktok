@@ -393,7 +393,7 @@ ProfileCard.displayName = 'ProfileCard';
 
 const App = () => {
   const [profiles, setProfiles] = useState([]);
-  const [config, setConfig] = useState({ videoFolder: '', maxConcurrency: 2, statsLimitDate: null, postDelayEnabled: 0, postDelayHours: 1 });
+  const [config, setConfig] = useState({ videoFolder: '', maxConcurrency: 2, statsLimitDate: null, postDelayEnabled: 0, postDelayMinutes: 60 });
   const [newProfileName, setNewProfileName] = useState('');
   const [newProfileGroupId, setNewProfileGroupId] = useState('');
   const [newProfileVideoFolder, setNewProfileVideoFolder] = useState('');
@@ -475,7 +475,7 @@ const App = () => {
   const fetchConfig = async () => {
     try {
       const res = await axios.get('/api/config');
-      setConfig(res.data || { videoFolder: '', maxConcurrency: 2, postDelayEnabled: 0, postDelayHours: 1 });
+      setConfig(res.data || { videoFolder: '', maxConcurrency: 2, postDelayEnabled: 0, postDelayMinutes: 60 });
     } catch (err) {
       console.error('Fetch config error:', err);
     }
@@ -791,11 +791,22 @@ const App = () => {
   // Giờ dự kiến của video đầu khi bật hẹn giờ. Chỉ là ước lượng cho người dùng
   // nhìn: backend còn làm tròn lên theo khoảng cách lịch của từng profile.
   const postDelayPreview = () => {
-    const hours = Number(config.postDelayHours);
-    if (!Number.isFinite(hours) || hours <= 0) return null;
-    return new Date(Date.now() + hours * 60 * 60 * 1000).toLocaleString('vi-VN', {
+    const minutes = Number(config.postDelayMinutes);
+    if (!Number.isFinite(minutes) || minutes <= 0) return null;
+    return new Date(Date.now() + minutes * 60 * 1000).toLocaleString('vi-VN', {
       day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
     });
+  };
+
+  // "90" đọc là "1 giờ 30 phút" cho dễ hình dung, nhưng dưới 60 thì giữ nguyên
+  // phút thay vì hiện "0 giờ 15 phút".
+  const formatPostDelay = (value) => {
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes) || minutes <= 0) return '0 phút';
+    if (minutes < 60) return `${minutes} phút`;
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    return rest === 0 ? `${hours} giờ` : `${hours} giờ ${rest} phút`;
   };
 
   const updateConfig = async () => {
@@ -1617,7 +1628,7 @@ const App = () => {
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                   <span>Hẹn giờ đăng</span>
                   <span style={{ color: 'white' }}>
-                    {Number(config.postDelayEnabled) === 1 ? `${config.postDelayHours}h` : 'Off'}
+                    {Number(config.postDelayEnabled) === 1 ? formatPostDelay(config.postDelayMinutes) : 'Off'}
                   </span>
                 </div>
               </div>
@@ -3192,19 +3203,25 @@ const App = () => {
                             type="number"
                             className="input"
                             style={{ width: '120px' }}
-                            min="0.5"
-                            max="240"
-                            step="0.5"
-                            value={config.postDelayHours ?? 1}
-                            onChange={(e) => setConfig({ ...config, postDelayHours: e.target.value })}
+                            min="10"
+                            max="14400"
+                            // Bậc 5 vì mọi mốc lịch đều rơi vào bội số 5 phút:
+                            // ô giờ của TikTok là time picker và chỉ có bằng
+                            // chứng nó nhận bội số 5. Nhận 27 ở đây chỉ tạo ra
+                            // khoảng lệch mà người dùng không hiểu vì sao.
+                            step="5"
+                            value={config.postDelayMinutes ?? 60}
+                            onChange={(e) => setConfig({ ...config, postDelayMinutes: e.target.value })}
                             onBlur={(e) => {
-                              const hours = Number(e.target.value);
-                              const safe = Number.isFinite(hours) ? Math.min(Math.max(hours, 0.5), 240) : 1;
-                              setConfig({ ...config, postDelayHours: safe });
+                              const minutes = Number(e.target.value);
+                              const safe = Number.isFinite(minutes)
+                                ? Math.min(Math.max(Math.ceil(minutes / 5) * 5, 10), 14400)
+                                : 60;
+                              setConfig({ ...config, postDelayMinutes: safe });
                             }}
                           />
                           <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                            giờ &mdash; tối thiểu 0.5 (30 phút), tối đa 240 (10 ngày)
+                            phút &mdash; bội số của 5, tối thiểu 10, tối đa 14400 (10 ngày)
                           </span>
                         </div>
                         {postDelayPreview() && (

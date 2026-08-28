@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    POST_DELAY_MAX_HOURS,
+    POST_DELAY_MAX_MINUTES,
     STUDIO_MAX_PENDING_DAYS,
     computeNextScheduledTime,
     computeAutoIncrementTime,
@@ -154,7 +154,7 @@ test('parseScheduleValue returns null on missing or unreadable input', () => {
 test('STUDIO_MAX_PENDING_DAYS leaves room for every schedule TikTok accepts', () => {
     // Trần dùng để phát hiện đọc nhãn hỏng. Nó phải nằm ngoài mọi mốc hợp lệ,
     // nếu không một lịch thật hẹn sát 10 ngày sẽ bị coi là rác và chặn upload.
-    const maxLegitDays = POST_DELAY_MAX_HOURS / 24;
+    const maxLegitDays = POST_DELAY_MAX_MINUTES / (24 * 60);
 
     assert.equal(maxLegitDays, 10);
     assert.ok(
@@ -182,20 +182,6 @@ test('parseStudioScheduleLabel rolls to next year for a label read across new ye
     assert.equal(localIso(parseStudioScheduleLabel('Dec 27, 9:00 AM', now)), '2026-12-27 09:00');
 });
 
-test('parseStudioScheduleLabel honours an explicit year in the label', () => {
-    const now = new Date(2026, 6, 10, 9, 0);
-
-    assert.equal(localIso(parseStudioScheduleLabel('Dec 25, 2027 3:30 PM', now)), '2027-12-25 15:30');
-    assert.equal(localIso(parseStudioScheduleLabel('12/25/2027 3:30 PM', now)), '2027-12-25 15:30');
-    assert.equal(localIso(parseStudioScheduleLabel('25/12/2027 15:30', now)), '2027-12-25 15:30');
-});
-
-test('parseStudioScheduleLabel strips the "Scheduled" prefix TikTok puts on the label', () => {
-    const now = new Date(2026, 6, 10, 9, 0);
-
-    assert.equal(localIso(parseStudioScheduleLabel('Scheduled for Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
-    assert.equal(localIso(parseStudioScheduleLabel('Scheduled Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
-});
 test('parseStudioScheduleLabel rolls back a year for a December label read in January', () => {
     // Chiều ngược của mốc giao thừa: đứng đầu tháng 1 nhìn lại lịch tháng 12 vừa
     // rồi, phải ra năm trước chứ không phải tháng 12 gần một năm nữa.
@@ -215,6 +201,20 @@ test('parseStudioScheduleLabel keeps a long-overdue label in the current year', 
     assert.equal(localIso(parseStudioScheduleLabel('Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
 });
 
+test('parseStudioScheduleLabel honours an explicit year in the label', () => {
+    const now = new Date(2026, 6, 10, 9, 0);
+
+    assert.equal(localIso(parseStudioScheduleLabel('Dec 25, 2027 3:30 PM', now)), '2027-12-25 15:30');
+    assert.equal(localIso(parseStudioScheduleLabel('12/25/2027 3:30 PM', now)), '2027-12-25 15:30');
+    assert.equal(localIso(parseStudioScheduleLabel('25/12/2027 15:30', now)), '2027-12-25 15:30');
+});
+
+test('parseStudioScheduleLabel strips the "Scheduled" prefix TikTok puts on the label', () => {
+    const now = new Date(2026, 6, 10, 9, 0);
+
+    assert.equal(localIso(parseStudioScheduleLabel('Scheduled for Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
+    assert.equal(localIso(parseStudioScheduleLabel('Scheduled Jul 13, 3:30 PM', now)), '2026-07-13 15:30');
+});
 
 test('parseStudioScheduleLabel reads midnight and noon correctly', () => {
     const now = new Date(2026, 6, 10, 9, 0);
@@ -234,11 +234,11 @@ test('parseStudioScheduleLabel returns null on empty or unreadable labels', () =
     assert.equal(parseStudioScheduleLabel('Feb 31, 3:30 PM', now), null);
 });
 
-test('computeDelayedFirstTime delays by the configured hours and rounds up to the interval', () => {
+test('computeDelayedFirstTime delays by the configured minutes and rounds up to the interval', () => {
     const now = new Date('2026-04-12T09:16:33.336Z');
 
     const scheduled = computeDelayedFirstTime({
-        delayHours: 1,
+        delayMinutes: 60,
         intervalMinutes: 5,
         now
     });
@@ -246,43 +246,86 @@ test('computeDelayedFirstTime delays by the configured hours and rounds up to th
     assert.equal(scheduled.toISOString(), '2026-04-12T10:20:00.000Z');
 });
 
-test('computeDelayedFirstTime accepts fractional hours down to half an hour', () => {
+test('computeDelayedFirstTime accepts a delay as short as 10 minutes', () => {
+    // Mốc 15 phút là sàn của setting: phải đi thẳng qua, không bị kéo lên 20
+    // phút như hai hàm lên lịch còn lại.
     const now = new Date('2026-04-12T09:16:33.336Z');
 
     assert.equal(
-        computeDelayedFirstTime({ delayHours: 0.5, intervalMinutes: 10, now }).toISOString(),
-        '2026-04-12T09:50:00.000Z'
+        computeDelayedFirstTime({ delayMinutes: 10, now }).toISOString(),
+        '2026-04-12T09:30:00.000Z'
     );
     assert.equal(
-        computeDelayedFirstTime({ delayHours: 1.5, intervalMinutes: 15, now }).toISOString(),
-        '2026-04-12T11:00:00.000Z'
+        computeDelayedFirstTime({ delayMinutes: 30, intervalMinutes: 10, now }).toISOString(),
+        '2026-04-12T09:50:00.000Z'
+    );
+    // 09:16:33 + 90 phút là 10:46:33, làm tròn lên mốc 5 phút thành 10:50.
+    // Interval của profile không còn ảnh hưởng tới mốc đầu.
+    assert.equal(
+        computeDelayedFirstTime({ delayMinutes: 90, now }).toISOString(),
+        '2026-04-12T10:50:00.000Z'
     );
 });
 
-test('computeDelayedFirstTime keeps the +20 minute floor TikTok needs', () => {
-    // Delay nhỏ hơn mốc TikTok chấp nhận vẫn phải rơi về sàn +20 phút, giống
-    // hai hàm lên lịch còn lại.
+test('computeDelayedFirstTime keeps the +10 minute floor TikTok needs', () => {
+    // Delay nhỏ hơn mốc TikTok chấp nhận vẫn phải rơi về sàn +10 phút, rồi làm
+    // tròn lên mốc 5 phút: 09:16:33 + 10 phút là 09:26:33 -> 09:30.
     const now = new Date('2026-04-12T09:16:33.336Z');
 
     assert.equal(
-        computeDelayedFirstTime({ delayHours: 0.1, intervalMinutes: 5, now }).toISOString(),
-        '2026-04-12T09:40:00.000Z'
+        computeDelayedFirstTime({ delayMinutes: 5, now }).toISOString(),
+        '2026-04-12T09:30:00.000Z'
     );
     assert.equal(
-        computeDelayedFirstTime({ delayHours: 0, intervalMinutes: 5, now }).toISOString(),
-        '2026-04-12T09:40:00.000Z'
+        computeDelayedFirstTime({ delayMinutes: 0, now }).toISOString(),
+        '2026-04-12T09:30:00.000Z'
     );
     assert.equal(
-        computeDelayedFirstTime({ delayHours: 'x', intervalMinutes: 5, now }).toISOString(),
-        '2026-04-12T09:40:00.000Z'
+        computeDelayedFirstTime({ delayMinutes: 'x', now }).toISOString(),
+        '2026-04-12T09:30:00.000Z'
     );
+});
+
+test('computeDelayedFirstTime always lands on a 5 minute mark', () => {
+    // Ô giờ của TikTok là time picker và chỉ có bằng chứng nó nhận bội số 5,
+    // nên mọi mốc -- kể cả khi hẹn số phút lẻ -- phải rơi vào bội số 5.
+    const now = new Date('2026-04-12T09:16:33.336Z');
+
+    for (const delay of [15, 17, 30, 130, 131, 137]) {
+        const slot = computeDelayedFirstTime({ delayMinutes: delay, now });
+        assert.equal(slot.getMinutes() % 5, 0, `hẹn ${delay} phút ra phút lẻ ${slot.toISOString()}`);
+        assert.equal(slot.getSeconds(), 0);
+        assert.ok(slot.getTime() >= now.getTime() + delay * 60 * 1000);
+    }
+});
+
+test('computeDelayedFirstTime never schedules earlier than asked when rounding to the minute', () => {
+    // 09:16:33 + 130 phút là 11:26:33. Làm tròn xuống thành 11:26 sẽ đặt lịch
+    // sớm hơn mốc đã hẹn, nên phải lên 11:27.
+    const now = new Date('2026-04-12T09:16:33.336Z');
+    const scheduled = computeDelayedFirstTime({ delayMinutes: 130, now });
+
+    assert.ok(scheduled.getTime() - now.getTime() >= 130 * 60 * 1000);
+    assert.equal(scheduled.getSeconds(), 0);
+});
+
+test('computeAutoIncrementTime chains by exactly one interval from the first slot', () => {
+    const now = new Date('2026-04-12T09:16:33.336Z');
+    const first = computeDelayedFirstTime({ delayMinutes: 130, now });
+
+    const second = computeAutoIncrementTime({ lastScheduledTime: first, intervalMinutes: 5, now });
+    const third = computeAutoIncrementTime({ lastScheduledTime: second, intervalMinutes: 5, now });
+
+    assert.equal(first.toISOString(), '2026-04-12T11:30:00.000Z');
+    assert.equal(second.toISOString(), '2026-04-12T11:35:00.000Z');
+    assert.equal(third.toISOString(), '2026-04-12T11:40:00.000Z');
 });
 
 test('computeDelayedFirstTime caps the delay at the 10 days TikTok allows', () => {
     const now = new Date('2026-04-12T09:16:33.336Z');
 
     const scheduled = computeDelayedFirstTime({
-        delayHours: 500,
+        delayMinutes: 500 * 60,
         intervalMinutes: 5,
         now
     });
@@ -293,7 +336,7 @@ test('computeDelayedFirstTime caps the delay at the 10 days TikTok allows', () =
 test('computeAutoIncrementTime chains from a delayed first slot', () => {
     // Video 2 trở đi nối tiếp từ giờ đã hẹn của video 1, không quay về now+20p.
     const now = new Date('2026-04-12T09:16:33.336Z');
-    const first = computeDelayedFirstTime({ delayHours: 2, intervalMinutes: 10, now });
+    const first = computeDelayedFirstTime({ delayMinutes: 120, intervalMinutes: 10, now });
 
     const second = computeAutoIncrementTime({ lastScheduledTime: first, intervalMinutes: 10, now });
     const third = computeAutoIncrementTime({ lastScheduledTime: second, intervalMinutes: 10, now });

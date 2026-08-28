@@ -11,8 +11,9 @@ import {
     computeNextScheduledTime,
     computeAutoIncrementTime,
     computeDelayedFirstTime,
-    POST_DELAY_MIN_HOURS,
-    POST_DELAY_MAX_HOURS,
+    POST_DELAY_MIN_MINUTES,
+    POST_DELAY_MAX_MINUTES,
+    SCHEDULE_SLOT_MINUTES,
     STUDIO_MAX_PENDING_DAYS,
     parseScheduleValue,
     parseStudioScheduleLabel,
@@ -396,19 +397,39 @@ const setConfig = (key, value) => {
 if (!getConfig('videoFolder', null)) setConfig('videoFolder', UPLOADS_DIR);
 if (!getConfig('maxConcurrency', null)) setConfig('maxConcurrency', '2');
 if (!getConfig('postDelayEnabled', null)) setConfig('postDelayEnabled', '0');
-if (!getConfig('postDelayHours', null)) setConfig('postDelayHours', '1');
+
+// Migration: hẹn giờ đăng chuyển từ giờ sang phút, để cài được mốc 15 phút mà
+// đơn vị giờ không diễn tả gọn được. Giá trị cũ được quy đổi đúng một lần, chứ
+// không bỏ đi — người dùng đã cài 1 giờ thì sau khi nâng cấp vẫn là 60 phút.
+if (!getConfig('postDelayMinutes', null)) {
+    // getConfig trả null khi thiếu khoá, mà Number(null) là 0 chứ không phải
+    // NaN -- nên phải tách trường hợp thiếu ra trước, nếu không máy cài mới sẽ
+    // nhận 0 phút thay vì mặc định 60.
+    const legacyRaw = getConfig('postDelayHours', null);
+    const legacyHours = legacyRaw === null ? NaN : Number(legacyRaw);
+    setConfig(
+        'postDelayMinutes',
+        Number.isFinite(legacyHours) && legacyHours > 0 ? Math.round(legacyHours * 60) : 60
+    );
+    setConfig('postDelayHours', null);
+}
 
 // Hẹn giờ đăng — setting toàn cục, ăn cho mọi profile và mọi kiểu chạy.
-const normalizePostDelayHours = (value) => {
-    const hours = Number(value);
-    if (!Number.isFinite(hours)) return null;
-    return Math.min(Math.max(hours, POST_DELAY_MIN_HOURS), POST_DELAY_MAX_HOURS);
+const normalizePostDelayMinutes = (value) => {
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes)) return null;
+    // Làm tròn lên bội số 5 chứ không phải về số nguyên gần nhất: mọi mốc lịch
+    // đều rơi vào bội số 5 phút, nên để ô cài đặt nhận 27 chỉ tạo ra khoảng
+    // lệch mà người dùng không hiểu vì sao.
+    const slot = SCHEDULE_SLOT_MINUTES;
+    const rounded = Math.ceil(minutes / slot) * slot;
+    return Math.min(Math.max(rounded, POST_DELAY_MIN_MINUTES), POST_DELAY_MAX_MINUTES);
 };
 
 // Trả về 0 khi tắt, để chỗ gọi chỉ cần kiểm tra > 0.
-const getPostDelayHours = () => {
+const getPostDelayMinutes = () => {
     if (String(getConfig('postDelayEnabled', '0')) !== '1') return 0;
-    return normalizePostDelayHours(getConfig('postDelayHours', 1)) ?? 0;
+    return normalizePostDelayMinutes(getConfig('postDelayMinutes', 60)) ?? 0;
 };
 
 // Cleanup: Reset any stuck profiles to "idle" on startup
@@ -1628,13 +1649,16 @@ app.post('/api/config', (req, res) => {
         if (k === 'postDelayEnabled') {
             return setConfig(k, v && String(v) !== '0' ? '1' : '0');
         }
-        if (k === 'postDelayHours') {
-            // Số giờ ngoài khoảng TikTok chấp nhận bị kẹp lại; không đọc được
+        if (k === 'postDelayMinutes') {
+            // Số phút ngoài khoảng TikTok chấp nhận bị kẹp lại; không đọc được
             // thì giữ nguyên giá trị cũ thay vì ghi NaN vào config.
-            const hours = normalizePostDelayHours(v);
-            if (hours === null) return;
-            return setConfig(k, hours);
+            const minutes = normalizePostDelayMinutes(v);
+            if (minutes === null) return;
+            return setConfig(k, minutes);
         }
+        // Khoá cũ từ thời tính bằng giờ: bỏ qua hẳn, nếu không một client cũ
+        // còn gửi kèm postDelayHours sẽ ghi lại khoá đã được migration dọn đi.
+        if (k === 'postDelayHours') return;
         setConfig(k, v);
     });
     res.json({ success: true });
@@ -3966,6 +3990,14 @@ const STUDIO_PAGE_RENDERED = '[data-tt^="Content_ContentPage"], [data-tt^="compo
 // bị đọc nhầm thành kênh trống.
 const STUDIO_EMPTY_STATE = 'button:has-text("Upload first video"), a:has-text("Upload first video")';
 const STUDIO_ROWS_SCANNED = 20;
+// Trang Content phải tải xong cả chục bundle JS của creator-center trước khi
+// DOMContentLoaded nổ. Qua proxy của profile, mỗi bundle mất 4-12s (đo được
+// ~39 KB/s so với ~86 KB/s đi thẳng), nên mốc 30s cũ hết giờ trước khi trang kịp
+// dựng và cả lượt upload chết oan dù proxy vẫn sống.
+const STUDIO_CONTENT_GOTO_TIMEOUT = 90000;
+// Danh sách video được React dựng sau khi XHR trả về — cũng đi qua đúng đường
+// truyền chậm đó, nên nới theo cùng lý do.
+const STUDIO_CONTENT_RENDER_TIMEOUT = 45000;
 
 /**
  * Đọc trang TikTok Studio Content để tìm mốc lịch xa nhất đang còn chờ đăng.
@@ -4002,14 +4034,6 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
 
             // Quét các dòng đầu danh sách chứ không chỉ dòng trên cùng, và lấy mốc
             // xa nhất, để lịch mới luôn nối tiếp phía sau bất kể TikTok sắp xếp
-// Trang Content phải tải xong cả chục bundle JS của creator-center trước khi
-// DOMContentLoaded nổ. Qua proxy của profile, mỗi bundle mất 4-12s (đo được
-// ~39 KB/s so với ~86 KB/s đi thẳng), nên mốc 30s cũ hết giờ trước khi trang kịp
-// dựng và cả lượt upload chết oan dù proxy vẫn sống.
-const STUDIO_CONTENT_GOTO_TIMEOUT = 90000;
-// Danh sách video được React dựng sau khi XHR trả về — cũng đi qua đúng đường
-// truyền chậm đó, nên nới theo cùng lý do.
-const STUDIO_CONTENT_RENDER_TIMEOUT = 45000;
             // các video đã lên lịch theo thứ tự nào.
             let latest = null;
             // Mốc vượt trần là dấu hiệu việc đọc nhãn đang hỏng, không phải một
@@ -4093,8 +4117,8 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     let hasExistingSchedule = false;
     // Hẹn giờ đăng: 0 nghĩa là tắt, khi bật thì không video nào được đăng ngay,
     // kể cả video đầu của lượt chạy.
-    const postDelayHours = getPostDelayHours();
-    const delayedStart = postDelayHours > 0;
+    const postDelayMinutes = getPostDelayMinutes();
+    const delayedStart = postDelayMinutes > 0;
 
     const browserOptions = {
         headless: false,
@@ -4166,7 +4190,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                 log(`Existing schedule detected. ALL ${uploadLimit} video(s) will be scheduled after ${lastScheduledTime.toISOString()}.`);
             } else if (delayedStart) {
-                log(`Post delay is on: no pending schedule on the channel, video 1 will be scheduled ${postDelayHours}h from now.`);
+                log(`Post delay is on: no pending schedule on the channel, video 1 will be scheduled ${postDelayMinutes} minutes from now.`);
             }
         }
         // --- Hết phần đọc lịch cũ ---
@@ -4786,7 +4810,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         await scheduleRadioInput.check({ force: true }).catch(() => scheduleRadioInput.click({ force: true }));
                         const batchLabel = hasExistingSchedule
                             ? 'continuing existing batch'
-                            : `delayed start +${postDelayHours}h`;
+                            : `delayed start +${postDelayMinutes}m`;
                         log(`Selected "Schedule" option (${batchLabel}).`);
                         await page.waitForTimeout(3000);
 
@@ -4794,11 +4818,11 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                         const intervalMin = profile.schedule_interval || 5;
                         // Chưa có mốc nào nghĩa là kênh sạch lịch và đang hẹn giờ:
-                        // video đầu lấy now + số giờ đã cài. Từ video 2 trở đi nối
+                        // video đầu lấy now + số phút đã cài. Từ video 2 trở đi nối
                         // tiếp bình thường theo schedule_interval của profile.
                         lastScheduledTime = lastScheduledTime
                             ? computeAutoIncrementTime({ lastScheduledTime, intervalMinutes: intervalMin })
-                            : computeDelayedFirstTime({ delayHours: postDelayHours, intervalMinutes: intervalMin });
+                            : computeDelayedFirstTime({ delayMinutes: postDelayMinutes });
                         const dateValue = formatScheduleValue(lastScheduledTime, 'date', scheduleInputs.date || {});
                         const timeValue = formatScheduleValue(lastScheduledTime, 'time', scheduleInputs.time || {});
 

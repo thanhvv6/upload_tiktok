@@ -1,5 +1,30 @@
 const pad = (value) => String(value).padStart(2, '0');
 
+/**
+ * Mọi mốc lịch đều rơi vào bội số 5 phút.
+ *
+ * Không phải để cho đẹp: ô giờ của TikTok là một time picker, và trong 4490 lần
+ * điền được ghi lại thì phút chỉ từng nhận bội số của 5. Phút lẻ là giá trị
+ * chưa từng được gửi đi lần nào, mà nhánh điền qua picker lại bỏ qua im lặng
+ * khi không tìm thấy dòng phút cần chọn.
+ */
+export const SCHEDULE_SLOT_MINUTES = 5;
+
+/**
+ * Làm tròn LÊN mốc 5 phút gần nhất. Luôn lên, không bao giờ xuống: đặt lịch
+ * sớm hơn mốc đã hẹn là sai hướng, muộn hơn vài phút thì vô hại.
+ *
+ * Cố tình dùng đơn vị cố định 5 phút chứ không phải interval. Làm tròn theo
+ * interval trên lưới đồng hồ tuyệt đối sẽ đá vào nhịp của loạt: loạt 9:15 /
+ * 9:25 / 9:35 với interval 10 bị kéo 9:35 thành 9:40. Còn mốc neo là bội số 5
+ * và interval (5/10/15) cũng là bội số 5, nên neo + k×interval vốn đã là bội số
+ * 5 -- làm tròn ở đây thành vô hại, và nhịp được giữ nguyên.
+ */
+const ceilToSlot = (timeMs) => {
+    const unit = SCHEDULE_SLOT_MINUTES * 60 * 1000;
+    return new Date(Math.ceil(timeMs / unit) * unit);
+};
+
 export function computeNextScheduledTime({ index, lastScheduledTime, intervalMinutes = 10, now = new Date() }) {
     if (index < 3) return null;
     const stepMin = Number(intervalMinutes) || 10;
@@ -18,17 +43,25 @@ export function computeAutoIncrementTime({ lastScheduledTime, intervalMinutes = 
     const stepMs = stepMin * 60 * 1000;
     const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
 
-    const baseTime = lastScheduledTime 
-        ? new Date(lastScheduledTime.getTime() + stepMs)
-        : new Date(now.getTime() + TWENTY_MINUTES_IN_MS);
+    const baseTime = lastScheduledTime
+        ? lastScheduledTime.getTime() + stepMs
+        : now.getTime() + TWENTY_MINUTES_IN_MS;
 
-    return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
+    return ceilToSlot(baseTime);
 }
 
 // Hẹn giờ đăng (setting toàn cục): TikTok chỉ nhận lịch trong vòng 10 ngày và
-// từ chối mốc quá sát hiện tại, nên số giờ người dùng nhập bị kẹp hai đầu.
-export const POST_DELAY_MIN_HOURS = 0.5;
-export const POST_DELAY_MAX_HOURS = 240;
+// từ chối mốc quá sát hiện tại, nên số phút người dùng nhập bị kẹp hai đầu.
+//
+// Sàn 10 phút là con số đã chạy thật lâu nay, không phải ước lượng. Trong log
+// có một lượt đặt lịch cách 7,5 phút và TikTok nhận (Post confirmed, lấy được
+// video ID), còn lượt cách 1,6 phút thì bấm Post 10 lần không xong. Ngưỡng thật
+// nằm giữa hai mốc đó, nên 10 vẫn còn biên.
+//
+// Đừng suy sàn từ giờ TikTok tự đề xuất khi mở form (đo được 14,9-19,9 phút):
+// đó là gợi ý mặc định, không phải mức tối thiểu nó chấp nhận.
+export const POST_DELAY_MIN_MINUTES = 10;
+export const POST_DELAY_MAX_MINUTES = 10 * 24 * 60;
 
 /**
  * Mốc chờ đọc từ TikTok Studio mà xa hơn ngần này thì chắc chắn là đọc hỏng.
@@ -40,27 +73,33 @@ export const POST_DELAY_MAX_HOURS = 240;
  */
 export const STUDIO_MAX_PENDING_DAYS = 11;
 
-/**
- * Mốc cho video đầu tiên khi bật hẹn giờ đăng: now + số giờ đã cài, vẫn giữ
- * sàn +20 phút và làm tròn lên bội số interval như hai hàm lên lịch còn lại,
- * để video 2 trở đi nối tiếp trên cùng một lưới thời gian.
- */
-export function computeDelayedFirstTime({ delayHours, intervalMinutes = 5, now = new Date() }) {
-    const stepMin = Number(intervalMinutes) || 5;
-    const stepMs = stepMin * 60 * 1000;
-    const TWENTY_MINUTES_IN_MS = 20 * 60 * 1000;
 
-    const requestedHours = Number(delayHours);
-    const safeHours = Number.isFinite(requestedHours)
-        ? Math.min(Math.max(requestedHours, 0), POST_DELAY_MAX_HOURS)
+/**
+ * Mốc cho video đầu tiên khi bật hẹn giờ đăng: now + số phút đã cài, giữ một
+ * cái sàn rồi làm tròn lên mốc 5 phút.
+ *
+ * Sàn ở đây là POST_DELAY_MIN_MINUTES (10 phút), sát hơn mốc 20 phút mà
+ * computeNextScheduledTime còn giữ. Được phép sát hơn vì mốc này được tính ngay
+ * trước khi điền vào form, tức là sau khi video đã upload xong, nên 10 phút là
+ * 10 phút thật tính từ lúc gửi -- khác hàm kia, vốn tính từ một thời điểm còn
+ * cách lúc gửi vài phút xử lý video.
+ *
+ * Không nhận interval nữa: mốc đầu chỉ phụ thuộc số phút đã hẹn, còn khoảng
+ * cách giữa các video là việc của computeAutoIncrementTime.
+ */
+export function computeDelayedFirstTime({ delayMinutes, now = new Date() }) {
+
+    const requestedMinutes = Number(delayMinutes);
+    const safeMinutes = Number.isFinite(requestedMinutes)
+        ? Math.min(Math.max(requestedMinutes, 0), POST_DELAY_MAX_MINUTES)
         : 0;
 
-    const baseTime = new Date(Math.max(
-        now.getTime() + safeHours * 60 * 60 * 1000,
-        now.getTime() + TWENTY_MINUTES_IN_MS
-    ));
+    const baseTime = Math.max(
+        now.getTime() + safeMinutes * 60 * 1000,
+        now.getTime() + POST_DELAY_MIN_MINUTES * 60 * 1000
+    );
 
-    return new Date(Math.ceil(baseTime.getTime() / stepMs) * stepMs);
+    return ceilToSlot(baseTime);
 }
 
 export function getScheduleHintText(meta = {}) {
