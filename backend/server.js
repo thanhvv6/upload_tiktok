@@ -4111,6 +4111,16 @@ async function checkExistingScheduledTime(page, log, maxAttempts = 5) {
     return null;
 }
 
+// Số lượt thử lại khâu chọn file, mỗi lượt reload trang trước khi thử tiếp.
+const FILE_PICK_ATTEMPTS = 3;
+// Dò nút upload. Mốc cũ 200ms được chọn cho máy chạy một hai browser; với bốn
+// profile song song thì nút chưa kịp "visible" trong ngần ấy, nên Strategy 1 bị
+// bỏ qua hoàn toàn và mọi thứ dồn xuống Strategy 2.
+const UPLOAD_BUTTON_PROBE_TIMEOUT = 1000;
+// Chờ sự kiện filechooser. Log cho thấy dưới tải, ba profile kịp trong 5 giây
+// còn một profile thì không — đúng cửa sổ này quyết định sống chết.
+const FILE_CHOOSER_TIMEOUT = 10000;
+
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
@@ -4261,57 +4271,92 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             log(`Selecting file...`);
             let uploaded = false;
 
-            // Strategy 1: Intercept filechooser with fast fallback
-            // Only use specific selectors that are known to work on TikTok's upload page
-            // Broad selectors like button[class*="upload"] can match wrong buttons (e.g. avatar upload)
-            const uploadButtonSelectors = [
-                'button.upload-stage-btn',
-                '[data-e2e="upload-video-button"]',
-            ];
-            for (const sel of uploadButtonSelectors) {
-                try {
-                    const el = await page.waitForSelector(sel, { timeout: 200, state: 'visible' }).catch(() => null);
-                    if (el) {
-                        log(`Found upload button: ${sel}. Intercepting filechooser...`);
+            // Chọn file có thể trượt khi nhiều profile chạy song song: bốn
+            // Chromium tranh CPU thì sự kiện filechooser không kịp nổ trong cửa
+            // sổ chờ. Trước đây trượt một lần là ném lỗi luôn, giết cả lượt chạy
+            // của profile — 18/26 lần lỗi trong log rơi vào lúc có từ 4 profile
+            // trở lên, và lần gần nhất mất 3/4 video. Thử lại như vòng điều
+            // hướng phía trên thay vì bỏ cuộc ngay.
+            for (let pick = 1; pick <= FILE_PICK_ATTEMPTS && !uploaded; pick++) {
+                if (pick > 1) {
+                    log(`File selection attempt ${pick}/${FILE_PICK_ATTEMPTS}: reloading upload page...`);
+                    await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null);
+                    await page.locator('input[type="file"], button.upload-stage-btn').first()
+                        .waitFor({ timeout: 15000, state: 'attached' }).catch(() => null);
+                }
+
+                // Strategy 1: Intercept filechooser with fast fallback
+                // Only use specific selectors that are known to work on TikTok's upload page
+                // Broad selectors like button[class*="upload"] can match wrong buttons (e.g. avatar upload)
+                const uploadButtonSelectors = [
+                    'button.upload-stage-btn',
+                    '[data-e2e="upload-video-button"]',
+                ];
+                for (const sel of uploadButtonSelectors) {
+                    try {
+                        const el = await page.waitForSelector(sel, { timeout: UPLOAD_BUTTON_PROBE_TIMEOUT, state: 'visible' }).catch(() => null);
+                        if (el) {
+                            log(`Found upload button: ${sel}. Intercepting filechooser...`);
+                            const [fileChooser] = await Promise.all([
+                                page.waitForEvent('filechooser', { timeout: FILE_CHOOSER_TIMEOUT }),
+                                el.click()
+                            ]);
+                            await fileChooser.setFiles(videoPath);
+                            log(`Strategy 1 success via ${sel}`);
+                            uploaded = true;
+                            break;
+                        }
+                    } catch (e) {
+                        log(`Strategy 1 via ${sel} failed: ${e.message.split('\n')[0]}`);
+                    }
+                }
+
+                if (!uploaded) {
+                    log(`Strategy 2: unhide input and click for filechooser...`);
+                    try {
+                        await page.evaluate(() => {
+                            const input = document.querySelector('input[type="file"]');
+                            if (input) {
+                                input.style.display = 'block';
+                                input.style.visibility = 'visible';
+                                input.style.opacity = '1';
+                                input.style.position = 'fixed';
+                                input.style.top = '0';
+                                input.style.left = '0';
+                                input.style.zIndex = '99999';
+                            }
+                        });
+                        await page.waitForTimeout(500);
                         const [fileChooser] = await Promise.all([
-                            page.waitForEvent('filechooser', { timeout: 5000 }),
-                            el.click()
+                            page.waitForEvent('filechooser', { timeout: FILE_CHOOSER_TIMEOUT }),
+                            page.click('input[type="file"]')
                         ]);
                         await fileChooser.setFiles(videoPath);
-                        log(`Strategy 1 success via ${sel}`);
+                        log(`Strategy 2 success`);
                         uploaded = true;
-                        break;
+                    } catch (e) {
+                        log(`Strategy 2 failed: ${e.message.split('\n')[0]}`);
                     }
-                } catch (e) { /* filechooser didn't fire in 5s → try next selector */ }
+                }
+
+                // Strategy 3: gán thẳng file vào input, không qua sự kiện
+                // filechooser. Hai cách trên đều phải chờ đúng một sự kiện nổ
+                // trong cửa sổ vài giây — chính chỗ thua khi máy đang tải nặng.
+                // setInputFiles bỏ qua cuộc đua đó và vẫn phát input/change như
+                // người dùng chọn thật.
+                if (!uploaded) {
+                    log(`Strategy 3: setInputFiles directly on the input...`);
+                    try {
+                        await page.setInputFiles('input[type="file"]', videoPath, { timeout: 15000 });
+                        log(`Strategy 3 success`);
+                        uploaded = true;
+                    } catch (e) {
+                        log(`Strategy 3 failed: ${e.message.split('\n')[0]}`);
+                    }
+                }
             }
 
-            if (!uploaded) {
-                log(`Strategy 2: unhide input and setInputFiles...`);
-                try {
-                    await page.evaluate(() => {
-                        const input = document.querySelector('input[type="file"]');
-                        if (input) {
-                            input.style.display = 'block';
-                            input.style.visibility = 'visible';
-                            input.style.opacity = '1';
-                            input.style.position = 'fixed';
-                            input.style.top = '0';
-                            input.style.left = '0';
-                            input.style.zIndex = '99999';
-                        }
-                    });
-                    await page.waitForTimeout(500);
-                    const [fileChooser] = await Promise.all([
-                        page.waitForEvent('filechooser', { timeout: 5000 }),
-                        page.click('input[type="file"]')
-                    ]);
-                    await fileChooser.setFiles(videoPath);
-                    log(`Strategy 2 success`);
-                    uploaded = true;
-                } catch (e) { }
-            }
-
-            if (!uploaded) throw new Error('Could not find file input or upload button');
+            if (!uploaded) throw new Error(`Could not find file input or upload button after ${FILE_PICK_ATTEMPTS} attempts`);
 
             log(`Video file selection complete. Waiting for UI...`);
             await page.waitForTimeout(3000);
