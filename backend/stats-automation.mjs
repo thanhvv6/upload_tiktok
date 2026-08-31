@@ -28,6 +28,80 @@ const NEW_FOLLOWER_LABELS = [
   'New followers', 'New follower', 'Người theo dõi mới', 'Lượt theo dõi mới', 'Follower mới',
 ];
 
+// Avatar kênh nằm ở góc trên phải header TikTok Studio, trong một thẻ img mang
+// data-tt="components_Avatar_AvatarImg" bọc bởi components_Avatar_AvatarContainer
+// (đọc trực tiếp từ trang thật).
+//
+// Hai selector Studio phải đứng trước: #header-profile-avatar và
+// data-e2e="profile-icon" là markup của tiktok.com, KHÔNG tồn tại trên Studio.
+// Giữ lại chỉ để phòng khi hàm này được gọi từ một trang tiktok.com nào đó.
+export const AVATAR_SELECTORS = [
+  '[data-tt="components_Avatar_AvatarImg"]',
+  '[data-tt="components_Avatar_AvatarContainer"] img',
+  '#header-profile-avatar img',
+  '#header-profile-avatar',
+  '[data-e2e="profile-icon"] img',
+  '[data-e2e="user-avatar"] img',
+];
+
+// Dự phòng khi TikTok đổi tên data-tt: ảnh avatar nằm trong object store
+// "-avt-" (tos-useast8-avt-0068-...), còn cover video là "-p-"
+// (tos-useast8-p-0068-...). Chỉ một ký tự khác nhau, nhưng đủ để không bắt
+// nhầm thumbnail của video thành avatar kênh.
+const AVATAR_URL_HINT = '-avt-';
+
+/**
+ * Chọn URL avatar đầu tiên dùng được trong đám ứng viên đọc từ DOM.
+ *
+ * Nhận cả `src` của thẻ img lẫn chuỗi `url("...")` của background-image, và bỏ
+ * qua mọi thứ không phải http(s): trước khi avatar thật về, Studio dựng sẵn thẻ
+ * img rỗng hoặc một ảnh data: xám. Lưu nhầm cái đó thì card hiện ô xám vĩnh
+ * viễn, mà lần quét sau vẫn thấy "đã có avatar" nên không sửa lại được.
+ */
+export function pickAvatarSrc(candidates = []) {
+  for (const raw of candidates) {
+    if (typeof raw !== 'string') continue;
+    let src = raw.trim();
+    const bg = src.match(/^url\((['"]?)(.*?)\1\)$/i);
+    if (bg) src = bg[2].trim();
+    if (!/^https?:\/\//i.test(src)) continue;
+    return src;
+  }
+  return null;
+}
+
+export async function fetchChannelAvatar(page, log = () => {}) {
+  try {
+    // 'attached' chứ không phải mặc định 'visible': avatar vẽ bằng
+    // background-image nằm trên một div rỗng, không có kích thước nên không bao
+    // giờ được tính là visible, và cả lượt chờ sẽ cháy hết timeout vô ích.
+    await page.waitForSelector(AVATAR_SELECTORS.join(', '), { state: 'attached', timeout: 5000 }).catch(() => null);
+    const candidates = await page.evaluate(({ selectors, urlHint }) => {
+      const out = [];
+      for (const sel of selectors) {
+        for (const el of document.querySelectorAll(sel)) {
+          if (el.tagName === 'IMG' && el.src) out.push(el.src);
+          const bg = window.getComputedStyle(el).backgroundImage;
+          if (bg && bg !== 'none') out.push(bg);
+        }
+      }
+      // Xếp theo vị trí từ trên xuống: avatar kênh nằm trên header, cao hơn
+      // mọi ảnh khác trên trang.
+      const byTop = [...document.querySelectorAll(`img[src*="${urlHint}"]`)]
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+      for (const img of byTop) out.push(img.src);
+      return out;
+    }, { selectors: AVATAR_SELECTORS, urlHint: AVATAR_URL_HINT });
+
+    const src = pickAvatarSrc(candidates);
+    log(src ? `  avatar: ${src.slice(0, 90)}` : '  avatar: not found on page');
+    return src;
+  } catch (err) {
+    log(`Avatar unavailable: ${err.message}`);
+    return null;
+  }
+}
+
 export async function runStatsForProfile(profile, jobId, ctx) {
   const {
     PROFILES_DIR,
@@ -40,7 +114,19 @@ export async function runStatsForProfile(profile, jobId, ctx) {
     applyProfileFingerprint,
     injectProfileCookies,
     statsLimitDate,
+    saveChannelAvatar,
+    scanStats,
+    scanAvatar,
+    scanDayCount,
+    countDate,
   } = ctx;
+  // Thiếu cờ nghĩa là quét đầy đủ: giữ nguyên hành vi của những chỗ gọi cũ,
+  // vốn không biết tới hai lựa chọn này.
+  const wantStats = scanStats !== false;
+  const wantAvatar = scanAvatar !== false;
+  // Ngược lại với hai cờ trên: đếm video theo ngày là việc mới, thiếu cờ nghĩa
+  // là không làm, để chỗ gọi cũ không tự dưng gánh thêm một lượt phân trang.
+  const wantDayCount = scanDayCount === true;
   const userDataDir = path.join(PROFILES_DIR, profile.name);
   let browser = null;
   const log = (msg) => console.log(`[${profile.name}][STATS] ${msg}`);
@@ -72,6 +158,33 @@ export async function runStatsForProfile(profile, jobId, ctx) {
     if (page.url().includes('login') || page.url().includes('passport')) {
       log('Redirected to login page');
       throw new Error('Profile chưa đăng nhập hoặc cookie đã hết hạn (bị chuyển hướng sang trang Login).');
+    }
+
+    if (wantAvatar) {
+      const avatarUrl = await fetchChannelAvatar(page, log);
+      let ok = false;
+      if (avatarUrl && typeof saveChannelAvatar === 'function') {
+        ok = (await saveChannelAvatar(profile, avatarUrl)) === true;
+      }
+      pushEvent(jobId, {
+        type: 'avatar', profileId: profile.id, profileName: profile.name, ok,
+      });
+    }
+
+    if (wantDayCount) {
+      const count = await countVideosOnDate(page, log, countDate, isAborted, jobId);
+      pushEvent(jobId, {
+        type: 'day_count', profileId: profile.id, profileName: profile.name, count, date: countDate,
+      });
+    }
+
+    // Không quét thống kê thì dừng ngay tại đây. Duyệt trang analytics của từng
+    // video chiếm gần hết thời gian một lượt quét đầy đủ, trong khi avatar nằm
+    // sẵn trên header và số video của một ngày chỉ tốn một trang API.
+    if (!wantStats) {
+      log('Light scan finished (video stats not requested)');
+      markProfileDone(jobId, profile.id);
+      return;
     }
 
     // ── Phase 1: Discover all video IDs via TikTok's internal API ──
@@ -226,13 +339,12 @@ export async function runStatsForProfile(profile, jobId, ctx) {
 }
 
 // Paginate through TikTok's internal API to discover all video IDs
-async function discoverAllVideos(page, log, isAborted, jobId, statsLimitDate) {
-  const allVideos = [];
-  const seenIds = new Set();
-  const limitTs = statsLimitDate ? new Date(statsLimitDate + 'T00:00:00').getTime() / 1000 : null;
-
-  // Build the base URL params from the page context
-  const baseParams = await page.evaluate(() => {
+/**
+ * Tham số URL chung cho API item_list, dựng từ chính trang đang mở để khớp với
+ * môi trường trình duyệt thật (kích thước màn hình, ngôn ngữ, phiên bản Chrome).
+ */
+async function buildItemListParams(page) {
+  return page.evaluate(() => {
     const p = new URLSearchParams({
       locale: 'en',
       aid: '1988',
@@ -254,59 +366,78 @@ async function discoverAllVideos(page, log, isAborted, jobId, statsLimitDate) {
     });
     return p.toString();
   });
+}
+
+/**
+ * Một trang kết quả item_list. fetch chạy ngay trong trang để đi kèm cookie và
+ * header của phiên đang đăng nhập -- gọi từ Node sẽ bị TikTok từ chối.
+ *
+ * limitTs (unix giây) là ngưỡng cắt của cài đặt "chỉ quét từ ngày": để null thì
+ * trả nguyên trang, không lọc.
+ */
+async function fetchItemListPage(page, baseParams, cursor, limitTs = null) {
+  return page.evaluate(async ({ apiPath, baseParams, cursor, limitTs }) => {
+    try {
+      const body = JSON.stringify({
+        cursor: cursor,
+        size: 50,
+        query: {
+          sort_orders: [{ field_name: 'post_time', order: 2 }],
+          conditions: [],
+          is_recent_posts: false
+        }
+      });
+
+      const resp = await fetch(apiPath + '?' + baseParams, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'content-type': 'application/json',
+          'accept': 'application/json',
+        },
+        body: body,
+      });
+
+      const data = await resp.json();
+      const allItems = (data.item_list || []).map(item => ({
+        id: item.item_id || item.aweme_id || '',
+        title: (item.title || '').substring(0, 80),
+        date: item.create_time ? new Date(item.create_time * 1000).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : '',
+        create_time: item.create_time || 0,
+        likes: item.stats?.like_count ?? item.stats?.digg_count
+          ?? item.statistics?.digg_count ?? item.like_count ?? item.digg_count ?? null,
+      }));
+
+      // Filter by limit date if set (API returns newest first)
+      const items = limitTs ? allItems.filter(item => item.create_time >= limitTs) : allItems;
+      const allOutOfRange = limitTs && allItems.length > 0 && items.length === 0;
+
+      return {
+        items,
+        hasMore: allOutOfRange ? false : (data.has_more || false),
+        nextCursor: data.cursor || cursor + 50,
+        statusCode: data.status_code,
+        allOutOfRange,
+      };
+    } catch (e) {
+      return { error: e.message, items: [], hasMore: false, nextCursor: cursor };
+    }
+  }, { apiPath: API_PATH, baseParams, cursor, limitTs });
+}
+
+async function discoverAllVideos(page, log, isAborted, jobId, statsLimitDate) {
+  const allVideos = [];
+  const seenIds = new Set();
+  const limitTs = statsLimitDate ? new Date(statsLimitDate + 'T00:00:00').getTime() / 1000 : null;
+
+  const baseParams = await buildItemListParams(page);
 
   let cursor = 0;
   let hasMore = true;
   const MAX_PAGES = 20;
 
   while (hasMore && !isAborted(jobId) && cursor < 10000) {
-    const pageResult = await page.evaluate(async ({ apiPath, baseParams, cursor, limitTs }) => {
-      try {
-        const body = JSON.stringify({
-          cursor: cursor,
-          size: 50,
-          query: {
-            sort_orders: [{ field_name: 'post_time', order: 2 }],
-            conditions: [],
-            is_recent_posts: false
-          }
-        });
-
-        const resp = await fetch(apiPath + '?' + baseParams, {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'content-type': 'application/json',
-            'accept': 'application/json',
-          },
-          body: body,
-        });
-
-        const data = await resp.json();
-        const allItems = (data.item_list || []).map(item => ({
-          id: item.item_id || item.aweme_id || '',
-          title: (item.title || '').substring(0, 80),
-          date: item.create_time ? new Date(item.create_time * 1000).toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }) : '',
-          create_time: item.create_time || 0,
-          likes: item.stats?.like_count ?? item.stats?.digg_count
-            ?? item.statistics?.digg_count ?? item.like_count ?? item.digg_count ?? null,
-        }));
-
-        // Filter by limit date if set (API returns newest first)
-        const items = limitTs ? allItems.filter(item => item.create_time >= limitTs) : allItems;
-        const allOutOfRange = limitTs && allItems.length > 0 && items.length === 0;
-
-        return {
-          items,
-          hasMore: allOutOfRange ? false : (data.has_more || false),
-          nextCursor: data.cursor || cursor + 50,
-          statusCode: data.status_code,
-          allOutOfRange,
-        };
-      } catch (e) {
-        return { error: e.message, items: [], hasMore: false, nextCursor: cursor };
-      }
-    }, { apiPath: API_PATH, baseParams, cursor, limitTs });
+    const pageResult = await fetchItemListPage(page, baseParams, cursor, limitTs);
 
     if (pageResult.error) {
       log(`API error at cursor ${cursor}: ${pageResult.error}`);
@@ -340,6 +471,78 @@ async function discoverAllVideos(page, log, isAborted, jobId, statsLimitDate) {
 
   log(`Discovery complete: ${allVideos.length} unique videos`);
   return allVideos;
+}
+
+/**
+ * Khoảng thời gian của một ngày lịch, trả về mốc unix giây [start, end).
+ *
+ * Tính theo giờ máy chứ không phải UTC: "video đã up hôm nay" là hôm nay theo
+ * đồng hồ người dùng đang nhìn. Dùng setDate để nhảy sang ngày kế tiếp thay vì
+ * cộng 86400 giây, cho đúng cả ở múi giờ có đổi giờ mùa.
+ *
+ * dateStr hỏng hoặc thiếu thì lấy ngày hiện tại -- ô ngày trên giao diện luôn
+ * gửi lên, nhưng không đáng để cả lượt quét chết vì một chuỗi rác.
+ */
+export function dayRangeSeconds(dateStr, now = new Date()) {
+  const parts = String(dateStr || '').split('-').map(Number);
+  const valid = parts.length === 3 && parts.every((n) => Number.isFinite(n));
+  const start = valid
+    ? new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0, 0)
+    : new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+  const end = new Date(start.getTime());
+  end.setDate(end.getDate() + 1);
+  return { start: Math.floor(start.getTime() / 1000), end: Math.floor(end.getTime() / 1000) };
+}
+
+// Trần số video duyệt qua khi đếm. Chỉ là lưới an toàn: danh sách sắp mới nhất
+// trước nên vòng lặp thoát ngay khi lùi qua đầu ngày, thường chỉ tốn một trang.
+const DAY_COUNT_MAX_ITEMS = 1000;
+
+/**
+ * Đếm số video của kênh mang mốc ngày đã chọn, tính cả video còn chờ tới giờ
+ * đăng.
+ *
+ * API trả mới nhất trước, mà video hẹn lịch tương lai nằm trên cùng: phải đi
+ * qua chúng chứ không được coi là đã hết danh sách. Ngược lại, gặp video cũ hơn
+ * đầu ngày là chắc chắn hết phần cần đếm, dừng luôn.
+ */
+async function countVideosOnDate(page, log, dateStr, isAborted, jobId) {
+  const { start, end } = dayRangeSeconds(dateStr);
+  const baseParams = await buildItemListParams(page);
+
+  const seen = new Set();
+  let cursor = 0;
+  let hasMore = true;
+  let count = 0;
+  let scanned = 0;
+
+  while (hasMore && !isAborted(jobId) && scanned < DAY_COUNT_MAX_ITEMS) {
+    const pageResult = await fetchItemListPage(page, baseParams, cursor);
+    if (pageResult.error) {
+      log(`Day count API error at cursor ${cursor}: ${pageResult.error}`);
+      break;
+    }
+    if (pageResult.items.length === 0) break;
+
+    let reachedOlder = false;
+    for (const item of pageResult.items) {
+      scanned++;
+      if (!item.id || seen.has(item.id)) continue;
+      seen.add(item.id);
+
+      const ts = item.create_time || 0;
+      if (ts >= end) continue;        // hẹn lịch cho ngày sau, chưa tới phần cần đếm
+      if (ts >= start) count++;
+      else reachedOlder = true;
+    }
+
+    if (reachedOlder) break;
+    hasMore = pageResult.hasMore;
+    cursor = pageResult.nextCursor;
+  }
+
+  log(`Videos posted on ${dateStr}: ${count} (scanned ${scanned})`);
+  return count;
 }
 
 async function checkRestriction(page) {

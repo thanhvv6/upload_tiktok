@@ -82,6 +82,7 @@ const PROFILES_DIR = path.join(__dirname, '..', 'profiles');
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const EXTENSIONS_DIR = path.join(__dirname, '..', 'extensions');
 const DUMMY_VIDEOS_DIR = path.join(__dirname, '..', 'dummy_videos');
+const AVATARS_DIR = path.join(DB_DIR, 'avatars');
 
 // Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR);
@@ -89,6 +90,7 @@ if (!fs.existsSync(PROFILES_DIR)) fs.mkdirSync(PROFILES_DIR);
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
 if (!fs.existsSync(EXTENSIONS_DIR)) fs.mkdirSync(EXTENSIONS_DIR);
 if (!fs.existsSync(DUMMY_VIDEOS_DIR)) fs.mkdirSync(DUMMY_VIDEOS_DIR);
+if (!fs.existsSync(AVATARS_DIR)) fs.mkdirSync(AVATARS_DIR, { recursive: true });
 
 // Clean stale Singleton lock files that prevent Chromium from launching
 // (left behind after crashes or force-kills)
@@ -356,6 +358,41 @@ try {
     }
 } catch (err) {
     console.error('Migration error (schedule_interval column):', err);
+}
+
+// Migration: channel_avatar — avatar hiện tại của kênh, quét từ header TikTok
+// Studio rồi tải về data/avatars. Khác hẳn avatar_image ở trên: cột kia là ảnh
+// local người dùng chọn để ĐỔI avatar, cột này là ảnh kênh đang dùng.
+// channel_avatar_at vừa là dấu thời gian quét, vừa là tham số phá cache của
+// thẻ <img> ở frontend — đường dẫn file không đổi nên trình duyệt sẽ giữ ảnh cũ.
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasChannelAvatar = tableInfo.some((col) => col.name === 'channel_avatar');
+    if (!hasChannelAvatar) {
+        db.exec('ALTER TABLE profiles ADD COLUMN channel_avatar TEXT;');
+        console.log('Added channel_avatar column to profiles table');
+    }
+    const hasChannelAvatarAt = tableInfo.some((col) => col.name === 'channel_avatar_at');
+    if (!hasChannelAvatarAt) {
+        db.exec('ALTER TABLE profiles ADD COLUMN channel_avatar_at TEXT;');
+        console.log('Added channel_avatar_at column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (channel_avatar columns):', err);
+}
+
+// Migration: last_scheduled_at — mốc hẹn giờ của video cuối cùng đã đăng thành
+// công trong lượt chạy gần nhất. Xoá về NULL mỗi khi profile bắt đầu chạy, nên
+// con số luôn thuộc về lượt hiện tại chứ không phải một loạt lịch cũ.
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasLastScheduled = tableInfo.some((col) => col.name === 'last_scheduled_at');
+    if (!hasLastScheduled) {
+        db.exec('ALTER TABLE profiles ADD COLUMN last_scheduled_at TEXT;');
+        console.log('Added last_scheduled_at column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (last_scheduled_at column):', err);
 }
 
 // Migration from db.json
@@ -1533,6 +1570,26 @@ app.delete('/api/groups/:id', (req, res) => {
         res.json({ success: true });
     } catch (err) {
         res.status(err.status || 400).json({ error: err.message });
+    }
+});
+
+// Ảnh avatar kênh đã quét. Phải nằm dưới /api vì vite chỉ proxy đúng tiền tố
+// đó sang backend; đặt ở đường dẫn khác thì dev server trả về index.html.
+app.get('/api/profiles/:id/avatar', (req, res) => {
+    try {
+        const row = db.prepare('SELECT channel_avatar FROM profiles WHERE id = ?').get(req.params.id);
+        if (!row || !row.channel_avatar) return res.status(404).json({ error: 'No avatar scanned yet' });
+
+        // basename() để một giá trị rác trong DB không leo ra khỏi thư mục avatar.
+        const filePath = path.join(AVATARS_DIR, path.basename(row.channel_avatar));
+        if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Avatar file is missing' });
+
+        // Frontend gắn ?v=<channel_avatar_at> nên URL đổi mỗi lần quét lại; nhờ
+        // vậy cache được lâu mà vẫn thấy ảnh mới ngay.
+        res.set('Cache-Control', 'public, max-age=3600');
+        res.sendFile(filePath);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -3715,6 +3772,11 @@ async function runSingleProfile(profile, limitUploads = false, uploadLimitCount 
     runningProfiles.add(profile.id);
 
     console.log(`[${profile.name}] Starting automation...`);
+    // KHÔNG xoá last_scheduled_at ở đây. Từng xoá, và hậu quả là suốt cả lượt
+    // chạy mới card không hiện gì -- mốc cũ biến mất ngay lúc bấm Start, còn
+    // mốc mới thì phải đợi video đầu upload xong mới có. Lượt nào đăng ngay
+    // không hẹn giờ thì mất hẳn. Cứ để mốc cũ đứng đó: nó vẫn là lịch đăng gần
+    // nhất đã đặt thật, và giao diện tự làm mờ khi mốc đã trôi qua.
     db.prepare('UPDATE profiles SET status = ?, last_run = ? WHERE id = ?').run('uploading', new Date().toISOString(), profile.id);
 
     try {
@@ -4214,6 +4276,11 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             }
             const videoFileName = videos[i];
             const videoPath = path.join(videoFolder, videoFileName);
+            // Mốc hẹn giờ đã điền được cho riêng video này. Chỉ ghi xuống DB sau
+            // khi Post thành công, nên phải theo từng vòng lặp chứ không dùng
+            // lastScheduledTime — biến đó là neo cho video kế tiếp, và vẫn giữ
+            // giá trị ngay cả khi khâu điền lịch của vòng này hỏng.
+            let scheduledThisVideo = null;
 
             log(`Processing video ${i + 1}/${videos.length}: ${videoFileName}`);
 
@@ -4880,6 +4947,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         log(`Video ${i + 1}: Scheduling at ${dateValue} ${timeValue} (${batchLabel}).`);
                         await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
                         await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
+                        scheduledThisVideo = lastScheduledTime;
                         await page.waitForTimeout(2000);
 
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_autoincrement_${i + 1}.png`) }).catch(() => null);
@@ -4906,6 +4974,9 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                             lastScheduledTime = parseScheduleValue(defaultDate, defaultTime);
                             if (lastScheduledTime) {
+                                // Mốc do TikTok tự điền, ta không sửa — vẫn là
+                                // lịch thật của video này.
+                                scheduledThisVideo = lastScheduledTime;
                                 log(`Captured base time: ${lastScheduledTime.toISOString()}`);
                             } else {
                                 log(`Warning: Failed to parse default time. Using fallback.`);
@@ -4921,6 +4992,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                             log(`Setting incremented schedule: ${dateValue} ${timeValue}`);
                             await fillScheduleInput(page, scheduleInputs.date, dateValue, 'Date', log);
                             await fillScheduleInput(page, scheduleInputs.time, timeValue, 'Time', log);
+                            scheduledThisVideo = lastScheduledTime;
                             await page.waitForTimeout(2000);
                         }
 
@@ -4969,6 +5041,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                         await fillScheduleInput(page, scheduleInputs.date, resolvedDateValue, 'Date', log);
                         await fillScheduleInput(page, scheduleInputs.time, resolvedTimeValue, 'Time', log);
+                        scheduledThisVideo = lastScheduledTime;
 
                         await page.waitForTimeout(3000); // Increased wait for UI to settle
 
@@ -5081,6 +5154,19 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
             if (clickedPost) {
                 log(`Finalizing upload for ${videoFileName}...`);
+
+                // Ghi mốc hẹn giờ sau khi TikTok đã nhận bài: điền được vào form
+                // mà Post hỏng thì chẳng có lịch nào tồn tại để mà báo.
+                if (scheduledThisVideo) {
+                    try {
+                        db.prepare('UPDATE profiles SET last_scheduled_at = ? WHERE id = ?')
+                            .run(scheduledThisVideo.toISOString(), profile.id);
+                        log(`Latest scheduled slot for this run: ${scheduledThisVideo.toISOString()}`);
+                    } catch (err) {
+                        log(`ERROR recording last_scheduled_at: ${err.message}`);
+                    }
+                }
+
                 let videoLink = null;
 
                 // Build the video link from the captured video ID
@@ -6819,11 +6905,78 @@ setInterval(checkAndRunSchedules, 60000);
 
 // ─── STATS FEATURE ───────────────────────────────────────────────────────────
 
+// Trần kích thước một file avatar. TikTok trả ảnh vuông cỡ 1080, nặng nhất vài
+// trăm KB; thứ gì lớn hơn nhiều lần thế là dấu hiệu tải nhầm (trang lỗi, URL
+// trỏ chỗ khác), không đáng ghi xuống đĩa.
+const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+const AVATAR_FETCH_TIMEOUT_MS = 15000;
+const AVATAR_EXT_BY_TYPE = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+};
+
+/**
+ * Tải avatar kênh về data/avatars rồi ghi đường dẫn vào profile.
+ *
+ * Lưu file thay vì lưu URL: link CDN của TikTok có chữ ký hết hạn, để nguyên
+ * thì vài ngày sau toàn bộ card trắng ảnh cùng lúc.
+ *
+ * Không bao giờ ném lỗi ra ngoài — hỏng ở đây chỉ là thiếu một cái ảnh, không
+ * được phép làm gãy lượt quét thống kê đang chạy cùng.
+ */
+async function saveChannelAvatar(profile, url) {
+    try {
+        const res = await fetch(url, {
+            signal: AbortSignal.timeout(AVATAR_FETCH_TIMEOUT_MS),
+            headers: { 'User-Agent': 'Mozilla/5.0', Referer: 'https://www.tiktok.com/' },
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const contentType = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (!contentType.startsWith('image/')) throw new Error(`không phải ảnh (content-type: ${contentType || 'trống'})`);
+
+        const buffer = Buffer.from(await res.arrayBuffer());
+        if (buffer.length === 0) throw new Error('body rỗng');
+        if (buffer.length > AVATAR_MAX_BYTES) throw new Error(`file quá lớn (${buffer.length} bytes)`);
+
+        const fileName = `${profile.id}.${AVATAR_EXT_BY_TYPE[contentType] || 'jpg'}`;
+        fs.writeFileSync(path.join(AVATARS_DIR, fileName), buffer);
+
+        // Đuôi file đổi (jpg -> webp) thì file cũ thành rác không ai dọn.
+        const previous = db.prepare('SELECT channel_avatar FROM profiles WHERE id = ?').get(profile.id)?.channel_avatar;
+        if (previous && previous !== fileName) {
+            const stale = path.join(AVATARS_DIR, path.basename(previous));
+            if (fs.existsSync(stale)) fs.unlinkSync(stale);
+        }
+
+        db.prepare('UPDATE profiles SET channel_avatar = ?, channel_avatar_at = ? WHERE id = ?')
+            .run(fileName, new Date().toISOString(), profile.id);
+        console.log(`[${profile.name}] Saved channel avatar (${buffer.length} bytes)`);
+        return true;
+    } catch (err) {
+        console.error(`[${profile.name}] Failed to save channel avatar: ${err.message}`);
+        return false;
+    }
+}
+
 // POST /api/stats/start
 app.post('/api/stats/start', async (req, res) => {
   const { profileIds } = req.body;
   if (!Array.isArray(profileIds) || profileIds.length === 0) {
     return res.status(400).json({ error: 'profileIds required' });
+  }
+
+  // Thiếu cờ nghĩa là quét đầy đủ, để chỗ gọi cũ không đổi hành vi. Riêng
+  // scanDayCount là việc mới nên mặc định tắt khi không được gửi lên.
+  const scanStats = req.body.scanStats !== false;
+  const scanAvatar = req.body.scanAvatar !== false;
+  const scanDayCount = req.body.scanDayCount === true;
+  const countDate = typeof req.body.countDate === 'string' ? req.body.countDate : null;
+  if (!scanStats && !scanAvatar && !scanDayCount) {
+    return res.status(400).json({ error: 'Chọn ít nhất một loại quét' });
   }
 
   const profiles = profileIds
@@ -6852,6 +7005,11 @@ app.post('/api/stats/start', async (req, res) => {
       injectProfileCookies,
       parseProxy,
       statsLimitDate: getConfig('statsLimitDate', null) || null,
+      scanStats,
+      scanAvatar,
+      scanDayCount,
+      countDate,
+      saveChannelAvatar,
     };
     for (let i = 0; i < profiles.length; i += BATCH) {
       if (isAborted(jobId)) break;

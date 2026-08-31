@@ -66,6 +66,12 @@ const ProfileCard = React.memo(React.forwardRef(({
   onOpenFolder,
   groups
 }, ref) => {
+  // Ảnh hỏng (file bị xoá tay, quét lỗi) thì rơi về icon mặc định. Reset theo
+  // channel_avatar_at để lượt quét sau còn có cơ hội hiện ảnh mới.
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  useEffect(() => { setAvatarFailed(false); }, [profile.channel_avatar_at]);
+  const showAvatar = !!profile.channel_avatar && !avatarFailed;
+
   return (
     <motion.div
       ref={ref}
@@ -96,8 +102,20 @@ const ProfileCard = React.memo(React.forwardRef(({
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
+              overflow: 'hidden',
+              flexShrink: 0
             }}>
-              <Globe size={20} color="var(--accent)" />
+              {showAvatar ? (
+                <img
+                  src={`/api/profiles/${profile.id}/avatar?v=${encodeURIComponent(profile.channel_avatar_at || '')}`}
+                  alt=""
+                  onError={() => setAvatarFailed(true)}
+                  title={profile.channel_avatar_at ? `Avatar quét lúc ${new Date(profile.channel_avatar_at).toLocaleString('vi-VN')}` : undefined}
+                  style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                />
+              ) : (
+                <Globe size={20} color="var(--accent)" />
+              )}
             </div>
           </div>
 
@@ -154,7 +172,7 @@ const ProfileCard = React.memo(React.forwardRef(({
           )}
 
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginTop: '6px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px', fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', minWidth: 0 }}>
               <Clock size={11} style={{ flexShrink: 0 }} />
               <span>{profile.last_run ? new Date(profile.last_run).toLocaleDateString() : 'Never run'}</span>
               <div style={{
@@ -165,6 +183,23 @@ const ProfileCard = React.memo(React.forwardRef(({
                 marginLeft: '4px',
                 flexShrink: 0
               }} />
+              {/* Mốc hẹn giờ của video cuối cùng trong lượt chạy gần nhất. */}
+              {(() => {
+                if (!profile.last_scheduled_at) return null;
+                const when = new Date(profile.last_scheduled_at);
+                if (Number.isNaN(when.getTime())) return null;
+                const passed = when.getTime() < Date.now();
+                return (
+                  <span
+                    title={`Video cuối của lượt chạy gần nhất được hẹn đăng lúc ${when.toLocaleString('vi-VN')}`}
+                    style={{ color: passed ? 'var(--error)' : '#F59E0B', fontWeight: '700', marginLeft: '2px' }}
+                  >
+                    {'\u2192'} {when.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
+                    {' '}
+                    {when.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}
+                  </span>
+                );
+              })()}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
               <button onClick={() => { setEditingId(profile.id); setEditingValue(profile.name); }} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', opacity: 0.5, padding: '2px' }}><Edit3 size={13} /></button>
