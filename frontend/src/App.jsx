@@ -72,13 +72,24 @@ const ProfileCard = React.memo(React.forwardRef(({
   useEffect(() => { setAvatarFailed(false); }, [profile.channel_avatar_at]);
   const showAvatar = !!profile.channel_avatar && !avatarFailed;
 
+  // Trạng thái thật của card. Các việc như engage hay login không ghi vào
+  // profiles.status mà chỉ sống trong state của trang, nên phải gộp lại ở đây;
+  // nếu không, card đang engage sẽ mang vạch đèn màu "nghỉ".
+  const effectiveStatus = isEngaging ? 'engaging'
+    : isLoggingIn ? 'logging_in'
+    : isChangingAvatar ? 'changing_avatar'
+    : isAddingFavoriteMusic ? 'adding_favorite_music'
+    : (profile.status || 'idle');
+  const isRunning = ['uploading', 'engaging', 'logging_in', 'changing_avatar', 'adding_favorite_music']
+    .includes(effectiveStatus);
+
   return (
     <motion.div
       ref={ref}
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="glass card"
+      className={`glass card s-${effectiveStatus}${isRunning ? ' is-running' : ''}`}
       style={{ display: 'flex', flexDirection: 'column' }}
     >
       {/* Header */}
@@ -142,13 +153,7 @@ const ProfileCard = React.memo(React.forwardRef(({
         </div>
 
         {/* Row 2: name + meta */}
-        <div style={{
-          marginTop: '10px',
-          background: 'rgba(255, 255, 255, 0.02)',
-          borderRadius: '10px',
-          padding: '10px 14px',
-          border: '1px solid var(--border)'
-        }}>
+        <div style={{ marginTop: '12px' }}>
           {editingId === profile.id ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <input
@@ -262,12 +267,7 @@ const ProfileCard = React.memo(React.forwardRef(({
             borderRadius: '50%',
             backgroundColor: getStatusColor(profile.status)
           }} />
-          <span style={{
-            fontSize: '0.75rem',
-            fontWeight: '700',
-            color: getStatusColor(profile.status),
-            textTransform: 'uppercase'
-          }}>
+          <span className="micro" style={{ color: getStatusColor(profile.status) }}>
             {profile.status}
           </span>
         </div>
@@ -275,43 +275,19 @@ const ProfileCard = React.memo(React.forwardRef(({
         {/* Row 1: Open + Start */}
         <div style={{ display: 'flex', gap: '6px', minWidth: 0 }}>
           <button
-            className="btn"
+            className="btn btn-ghost"
             onClick={() => onOpen(profile.id)}
-            style={{
-              display: 'flex',
-              flex: 1,
-              minWidth: 0,
-              background: 'rgba(255, 255, 255, 0.05)',
-              color: 'white',
-              border: '1px solid var(--border)',
-              padding: '7px 8px',
-              borderRadius: '8px',
-              gap: '4px',
-              justifyContent: 'center',
-              fontSize: '0.78rem'
-            }}
+            style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600' }}
           >
             <ExternalLink size={13} />
             OPEN
           </button>
 
           <button
-            className="btn"
+            className={`btn ${profile.status === 'uploading' ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => onStart(profile.id)}
             disabled={profile.status === 'uploading' || isEngaging}
-            style={{
-              display: 'flex',
-              flex: 1,
-              minWidth: 0,
-              background: profile.status === 'uploading' ? 'transparent' : 'rgba(255, 255, 255, 0.05)',
-              color: profile.status === 'uploading' ? 'var(--accent)' : 'white',
-              border: '1px solid var(--border)',
-              padding: '7px 8px',
-              borderRadius: '8px',
-              gap: '4px',
-              justifyContent: 'center',
-              fontSize: '0.78rem'
-            }}
+            style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': profile.status === 'uploading' ? 'var(--sky)' : 'var(--pink)' }}
           >
             {profile.status === 'uploading' ? (
               <RefreshCw size={13} className="animate-pulse" />
@@ -325,46 +301,20 @@ const ProfileCard = React.memo(React.forwardRef(({
         {/* Row 2: Engage | Login */}
         <div style={{ display: 'flex', gap: '6px', minWidth: 0 }}>
           <button
-            className="btn"
+            className={`btn ${isEngaging ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => isEngaging ? onStopEngage(profile.id) : onEngage(profile.id)}
             disabled={profile.status === 'uploading'}
-            style={{
-              display: 'flex',
-              flex: 1,
-              minWidth: 0,
-              background: isEngaging ? 'rgba(239, 68, 68, 0.12)' : 'rgba(236, 72, 153, 0.08)',
-              color: isEngaging ? '#EF4444' : '#EC4899',
-              border: `1px solid ${isEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.25)'}`,
-              padding: '7px 8px',
-              borderRadius: '8px',
-              gap: '4px',
-              fontWeight: '700',
-              justifyContent: 'center',
-              fontSize: '0.78rem'
-            }}
+            style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': isEngaging ? 'var(--red)' : 'var(--indigo)' }}
           >
             <Heart size={13} />
             ENGAGE
           </button>
 
           <button
-            className="btn"
+            className={`btn ${isLoggingIn ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => isLoggingIn ? onStopLoginTikTok(profile.id) : onLoginTikTok(profile.id)}
             disabled={profile.status === 'uploading' || (!profile.email && !profile.pass)}
-            style={{
-              display: 'flex',
-              flex: 1,
-              minWidth: 0,
-              background: isLoggingIn ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.08)',
-              color: isLoggingIn ? '#EF4444' : '#10B981',
-              border: `1px solid ${isLoggingIn ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.25)'}`,
-              padding: '7px 8px',
-              borderRadius: '8px',
-              gap: '4px',
-              fontWeight: '700',
-              justifyContent: 'center',
-              fontSize: '0.78rem'
-            }}
+            style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': isLoggingIn ? 'var(--red)' : 'var(--green)' }}
           >
             <LogIn size={14} />
             LOGIN
@@ -374,46 +324,20 @@ const ProfileCard = React.memo(React.forwardRef(({
         {/* Row 3: Avatar | Favorites */}
         <div style={{ display: 'flex', gap: '6px', minWidth: 0 }}>
           <button
-            className="btn"
+            className={`btn ${isChangingAvatar ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => onChangeAvatar(profile.id)}
             disabled={profile.status === 'uploading' || isChangingAvatar}
-            style={{
-              display: 'flex',
-              flex: 1,
-              minWidth: 0,
-              background: isChangingAvatar ? 'rgba(59, 130, 246, 0.12)' : 'rgba(59, 130, 246, 0.08)',
-              color: isChangingAvatar ? '#3B82F6' : '#60A5FA',
-              border: '1px solid rgba(59,130,246,0.25)',
-              padding: '7px 8px',
-              borderRadius: '8px',
-              gap: '4px',
-              fontWeight: '700',
-              justifyContent: 'center',
-              fontSize: '0.78rem'
-            }}
+            style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': 'var(--sky)' }}
           >
             <Camera size={13} />
             AVATAR
           </button>
 
           <button
-            className="btn"
+            className={`btn ${isAddingFavoriteMusic ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => onAddFavoriteMusic(profile.id)}
             disabled={profile.status === 'uploading' || isAddingFavoriteMusic}
-            style={{
-              display: 'flex',
-              flex: 1,
-              minWidth: 0,
-              background: isAddingFavoriteMusic ? 'rgba(168, 85, 247, 0.12)' : 'rgba(168, 85, 247, 0.08)',
-              color: isAddingFavoriteMusic ? '#A855F7' : '#C084FC',
-              border: '1px solid rgba(168,85,247,0.25)',
-              padding: '7px 8px',
-              borderRadius: '8px',
-              gap: '4px',
-              fontWeight: '700',
-              justifyContent: 'center',
-              fontSize: '0.78rem'
-            }}
+            style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': 'var(--amber)' }}
           >
             <Music size={13} />
             FAVORITES
@@ -1501,19 +1425,28 @@ const App = () => {
   };
 
   return (
-    <div className="container" style={{ padding: '20px 20px', maxWidth: '1400px', margin: '0 auto', height: '100vh', boxSizing: 'border-box' }}>
+    <div className="container" style={{ padding: '20px 20px', maxWidth: '1400px', margin: '0 auto', minHeight: '100vh', boxSizing: 'border-box' }}>
       {/* Sidebar / Navigation */}
       <div style={{
         display: 'grid',
         gridTemplateColumns: sidebarCollapsed ? '60px 1fr' : '280px 1fr',
         gap: '40px',
-        height: '100%',
-        overflow: 'hidden',
+        alignItems: 'start',
         transition: 'grid-template-columns 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
       }}>
         <motion.aside
           layout
-          style={{ display: 'flex', flexDirection: 'column', gap: '32px', overflow: 'hidden' }}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '32px',
+            overflowX: 'hidden',
+            overflowY: 'auto',
+            position: 'sticky',
+            top: '20px',
+            alignSelf: 'start',
+            maxHeight: 'calc(100vh - 40px)'
+          }}
         >
           {/* Toggle button */}
           <button
@@ -1642,37 +1575,32 @@ const App = () => {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              style={{ padding: '24px', borderRadius: '20px' }}
+              style={{ padding: '18px 20px', borderRadius: '16px' }}
             >
-              <h4 style={{ fontSize: '0.9rem', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <ShieldCheck size={16} color="var(--success)" /> System Status
+              <h4 style={{ fontFamily: 'var(--display)', fontSize: '13px', fontWeight: '600', margin: '0 0 14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ShieldCheck size={14} color="var(--green)" /> System Status
               </h4>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <span>Active Profiles</span>
-                  <span style={{ color: 'white' }}>{profiles.length}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <span>Concurrency</span>
-                  <span style={{ color: 'white' }}>{config.maxConcurrency}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <span>Stats Date Limit</span>
-                  <span style={{ color: 'white' }}>{config.statsLimitDate || 'None'}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <span>Hẹn giờ đăng</span>
-                  <span style={{ color: 'white' }}>
-                    {Number(config.postDelayEnabled) === 1 ? formatPostDelay(config.postDelayMinutes) : 'Off'}
-                  </span>
-                </div>
+              {/* Nhãn là siêu dữ liệu, con số mới là nội dung: nhãn nhỏ in hoa
+                  giãn chữ, số dùng mono tabular để các hàng thẳng cột với nhau. */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '11px' }}>
+                {[
+                  ['Active profiles', String(profiles.length)],
+                  ['Concurrency', String(config.maxConcurrency)],
+                  ['Stats từ ngày', config.statsLimitDate || '—'],
+                  ['Hẹn giờ đăng', Number(config.postDelayEnabled) === 1 ? formatPostDelay(config.postDelayMinutes) : 'Tắt'],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '10px' }}>
+                    <span className="micro">{label}</span>
+                    <span className="mono" style={{ fontSize: '12.5px', color: 'var(--ink)' }}>{value}</span>
+                  </div>
+                ))}
               </div>
             </motion.div>
           )}
         </motion.aside>
 
         {/* Main Content */}
-        <main style={{ overflowY: 'auto', height: '100%' }}>
+        <main>
           {/* Flash message is now rendered as fixed toast below */}
 
           {activeTab === 'profiles' ? (
@@ -1742,70 +1670,40 @@ const App = () => {
                     Import Folder
                   </button>
                   <button
-                    className="btn btn-secondary"
+                    className="btn btn-ghost"
                     onClick={() => setIsExportFolderModalOpen(true)}
                     disabled={selectedForRun.size === 0}
                     title={selectedForRun.size === 0 ? 'Tick checkbox trên các profile cần export' : 'Export danh sách profile đã chọn thành thư mục/ZIP theo format TikTok_Export'}
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(59, 130, 246, 0.1)',
-                      color: '#3B82F6',
-                      border: '1px solid rgba(59, 130, 246, 0.3)',
-                      fontWeight: '700',
-                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
-                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
-                    }}
+                    style={{ gap: '10px', '--tint': 'var(--sky)' }}
                   >
                     <Download size={18} />
                     Export Folder ({selectedForRun.size})
                   </button>
                   <button
-                    className="btn"
+                    className="btn btn-ghost"
                     onClick={clearTrash}
                     disabled={selectedForRun.size === 0}
                     title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần dọn rác' : 'Xoá cache/thùng rác của các profile đã chọn để tiết kiệm dung lượng'}
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(239, 155, 68, 0.08)',
-                      color: '#F59E0B',
-                      border: '1px solid rgba(245, 158, 11, 0.25)',
-                      fontWeight: '700',
-                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
-                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
-                    }}
+                    style={{ gap: '10px', '--tint': 'var(--amber)' }}
                   >
                     <Trash2 size={18} />
                     Clear Trash
                   </button>
                   <button
-                    className="btn"
+                    className="btn btn-ghost"
                     onClick={clearDebugFiles}
                     title="Xóa file debug PNG và dọn automation.log để giải phóng dung lượng (~300-600MB)"
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(139, 92, 246, 0.08)',
-                      color: '#8B5CF6',
-                      border: '1px solid rgba(139, 92, 246, 0.25)',
-                      fontWeight: '700',
-                    }}
+                    style={{ gap: '10px', '--tint': 'var(--amber)' }}
                   >
                     <Trash2 size={18} />
                     Clear Debug
                   </button>
                   <button
-                    className="btn"
+                    className="btn btn-ghost"
                     onClick={deleteSelectedProfiles}
                     disabled={selectedForRun.size === 0}
                     title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần xóa' : 'Xoá các profile đã chọn và folder của chúng'}
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(239, 68, 68, 0.08)',
-                      color: '#EF4444',
-                      border: '1px solid rgba(239, 68, 68, 0.25)',
-                      fontWeight: '700',
-                      opacity: selectedForRun.size === 0 ? 0.45 : 1,
-                      cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
-                    }}
+                    style={{ gap: '10px', '--tint': 'var(--red)' }}
                   >
                     <Trash2 size={18} />
                     Xóa Profile
@@ -1821,11 +1719,11 @@ const App = () => {
                     Chạy đã chọn
                   </button>
                   <button
-                    className="btn btn-primary"
+                    className="btn btn-ghost"
                     onClick={openStatsModal}
                     disabled={selectedForRun.size === 0}
                     title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần thống kê' : 'Thống kê video cho các profile đã chọn'}
-                    style={{ gap: '10px' }}
+                    style={{ gap: '10px', '--tint': 'var(--indigo)' }}
                   >
                     <BarChart2 size={18} />
                     Thống kê
@@ -1833,19 +1731,11 @@ const App = () => {
 
                   {/* Bulk Login button */}
                   <button
-                    className="btn"
+                    className="btn btn-ghost"
                     onClick={startBulkLogin}
                     disabled={selectedForRun.size === 0 || isLoading}
                     title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần Login' : 'Login TikTok cho tất cả đã chọn'}
-                    style={{
-                      gap: '10px',
-                      background: 'rgba(16, 185, 129, 0.08)',
-                      color: '#10B981',
-                      border: '1px solid rgba(16, 185, 129, 0.25)',
-                      fontWeight: '700',
-                      opacity: (selectedForRun.size === 0 || isLoading) ? 0.45 : 1,
-                      cursor: (selectedForRun.size === 0 || isLoading) ? 'not-allowed' : 'pointer'
-                    }}
+                    style={{ gap: '10px', '--tint': 'var(--green)' }}
                   >
                     <LogIn size={18} />
                     Login đã chọn
@@ -1857,19 +1747,11 @@ const App = () => {
                     const allSelectedEngaging = selectedForRun.size > 0 && selectedEngaging.length === selectedForRun.size;
                     return (
                       <button
-                        className="btn"
+                        className={`btn ${allSelectedEngaging ? 'btn-tinted' : 'btn-ghost'}`}
                         onClick={() => allSelectedEngaging ? stopBulkEngage() : startBulkEngage()}
                         disabled={selectedForRun.size === 0}
                         title={selectedForRun.size === 0 ? 'Tick checkbox trên từng profile cần Engage' : (allSelectedEngaging ? 'Dừng Engage tất cả đã chọn' : 'Bật Auto Engage cho tất cả đã chọn')}
-                        style={{
-                          gap: '10px',
-                          background: allSelectedEngaging ? 'rgba(239,68,68,0.1)' : 'rgba(236,72,153,0.1)',
-                          color: allSelectedEngaging ? '#EF4444' : '#EC4899',
-                          border: `1px solid ${allSelectedEngaging ? 'rgba(239,68,68,0.3)' : 'rgba(236,72,153,0.3)'}`,
-                          fontWeight: '700',
-                          opacity: selectedForRun.size === 0 ? 0.45 : 1,
-                          cursor: selectedForRun.size === 0 ? 'not-allowed' : 'pointer'
-                        }}
+                        style={{ gap: '10px', '--tint': allSelectedEngaging ? 'var(--red)' : 'var(--pink)' }}
                       >
                         {allSelectedEngaging
                           ? <><StopCircle size={18} className="animate-pulse" /> Stop Engage</>

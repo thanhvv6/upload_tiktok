@@ -1,147 +1,323 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap");
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Tông màu theo concept TikTok Receiver.
+   Nguyên tắc: hồng và chàm là màu thương hiệu; xanh lá, xanh dương, hổ phách,
+   đỏ CHỈ được dùng để nói trạng thái. Một nút không nói trạng thái thì không
+   được mang màu trạng thái — đó là thứ giữ cho giao diện đọc được.
+   ═══════════════════════════════════════════════════════════════════════════ */
 :root {
-  --primary: #FF3FB6;
-  --secondary: #6366F1;
-  --accent: #38BDF8;
-  --bg: #0B0E14;
-  --card-bg: rgba(23, 27, 34, 0.8);
-  --text: #F1F5F9;
-  --text-muted: #94A3B8;
-  --success: #10B981;
-  --error: #EF4444;
-  --border: rgba(255, 255, 255, 0.08);
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  /* Nền và bề mặt */
+  --bg:      #07080c;
+  --panel:   rgba(19, 22, 31, 0.66);
+  --panel-2: rgba(27, 31, 43, 0.70);
+  --line:    rgba(255, 255, 255, 0.07);
+  --line-2:  rgba(255, 255, 255, 0.13);
+
+  /* Ba bậc chữ, không hơn */
+  --ink:   #eceff6;
+  --ink-2: #98a1b6;
+  --ink-3: #626b80;
+
+  /* Thương hiệu */
+  --pink:   #ff3fb6;
+  --indigo: #7c7cf6;
+  /* Trạng thái */
+  --sky:   #38bdf8;
+  --green: #22d39a;
+  --amber: #fbbf24;
+  --red:   #ff6b6b;
+  /* Trạng thái nghỉ: xám xanh, đủ thấy mà không đòi chú ý */
+  --idle:  #2f3648;
+
+  /* Bí danh cho những tên biến App.jsx đã dùng rải khắp 3400 dòng. Giữ lại để
+     đổi cả bảng màu mà không phải sờ vào từng chỗ. */
+  --primary:    var(--pink);
+  --secondary:  var(--indigo);
+  --accent:     var(--sky);
+  --text:       var(--ink);
+  --text-muted: var(--ink-2);
+  --success:    var(--green);
+  --error:      var(--red);
+  --border:     var(--line);
+  --card-bg:    var(--panel);
+
+  --ui:      "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --display: "Space Grotesk", "IBM Plex Sans", -apple-system, sans-serif;
+  --mono:    "IBM Plex Mono", "SF Mono", Menlo, ui-monospace, monospace;
+
+  font-family: var(--ui);
 }
 
 body {
-  background: radial-gradient(circle at top right, #1e1b4b, #0B0E14 40%);
-  background-attachment: fixed;
-  color: var(--text);
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
   min-height: 100vh;
+  font-family: var(--ui);
+  -webkit-font-smoothing: antialiased;
 }
 
+/* Quầng sáng là không khí phía sau các bề mặt kính, không phải thứ để nhìn.
+   Nền đen đặc làm mọi panel trông như dán lên tường; ba nguồn sáng rất nhạt
+   cho chúng một chỗ để nổi lên. Fixed nên không trôi khi cuộn. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 520px at 10% -10%, rgba(255, 63, 182, 0.15), transparent 70%),
+    radial-gradient(1000px 620px at 88% -14%, rgba(124, 124, 246, 0.18), transparent 72%),
+    radial-gradient(760px 520px at 62% 112%, rgba(56, 189, 248, 0.07), transparent 70%);
+}
+
+h1, h2, h3 { font-family: var(--display); letter-spacing: -0.02em; }
+
+/* Nhãn micro: mono, in hoa, giãn chữ rộng. Dùng cho tên của một con số —
+   nhãn đọc như siêu dữ liệu, con số mới là nội dung. */
+.micro {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* ── Bề mặt ───────────────────────────────────────────────────────────── */
 .glass {
-  background: var(--card-bg);
-  backdrop-filter: blur(16px) saturate(180%);
-  border: 1px solid var(--border);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  box-shadow: 0 30px 60px -46px #000;
 }
 
+.card {
+  position: relative;
+  padding: 18px;
+  border-radius: 16px;
+  overflow: hidden;
+  --rail: var(--idle);
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.card:hover { border-color: var(--line-2); }
+
+/* Không có vạch đèn dọc mép trái. Concept dùng nó cho hàng bảng cao 80px, ở đó
+   3px là một dấu nhỏ; card ở đây cao 344px nên cùng ý tưởng lại ra một dải màu
+   dày chạy suốt cạnh, đọc như đường viền hỏng chứ không ra tín hiệu. Trạng thái
+   đã có chấm màu + chữ ở giữa card, và card đang chạy thì có viền quét.
+
+   Biến --rail vẫn giữ: viền quét lấy màu từ nó. */
+
+.card.s-uploading,
+.card.s-scanning              { --rail: var(--sky); }
+.card.s-success               { --rail: var(--green); }
+.card.s-error                 { --rail: var(--red); }
+.card.s-no_videos             { --rail: var(--amber); }
+.card.s-logging_in            { --rail: var(--green); }
+.card.s-changing_avatar       { --rail: var(--indigo); }
+.card.s-adding_favorite_music { --rail: var(--indigo); }
+.card.s-engaging              { --rail: var(--pink); }
+
+/* Viền quét cho profile đang làm việc.
+   Vạch đèn bên trái đã nói "card này đang chạy", nhưng nó chỉ rộng ba pixel ở
+   một góc; liếc qua lưới ba cột vẫn dễ trượt. Khung này nói cùng một điều mà
+   chiếm trọn chu vi.
+
+   Dựng bằng mặt nạ hai lớp: nền phủ kín hộp rồi khoét ruột bằng mask-composite,
+   chỉ chừa lại đúng vành. Cách này giữ được bo góc, còn border thường thì không
+   nhận gradient. Màu lấy từ chính --rail của card, để viền và vạch đèn không
+   nói hai thứ tiếng khác nhau. */
+.card.is-running::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: 16px;
+  padding: 1.5px;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg,
+      transparent 0%,
+      color-mix(in srgb, var(--rail) 28%, transparent) 34%,
+      var(--rail) 46%, #ffffff 50%, var(--rail) 54%,
+      color-mix(in srgb, var(--rail) 28%, transparent) 66%,
+      transparent 100%),
+    linear-gradient(0deg,
+      color-mix(in srgb, var(--rail) 50%, transparent),
+      color-mix(in srgb, var(--rail) 50%, transparent));
+  background-size: 260% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  animation: sweep 2.4s linear infinite;
+}
+
+@keyframes sweep {
+  from { background-position: 230% 0, 0 0; }
+  to   { background-position: -30% 0, 0 0; }
+}
+
+.card.is-running { background: rgba(38, 43, 59, 0.5); }
+
+/* ── Nút ──────────────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex;
   align-items: center;
-  padding: 10px 20px;
+  gap: 7px;
+  padding: 8px 15px;
   border-radius: 10px;
+  font-family: var(--ui);
   font-weight: 600;
+  font-size: 12.5px;
   cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  border: none;
-  font-size: 0.875rem;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
+/* Hành động chính là thứ duy nhất được đặc màu. Mọi nút khác là bóng mờ, và
+   dựa vào màu icon để tự phân biệt. */
 .btn-primary {
-  background: linear-gradient(135deg, var(--primary), #FF2150);
-  color: white;
-  box-shadow: 0 4px 14px 0 rgba(255, 63, 182, 0.39);
+  background: linear-gradient(145deg, var(--pink), var(--indigo));
+  color: #fff;
+  box-shadow: 0 8px 24px -10px rgba(255, 63, 182, 0.8);
 }
 
-.btn-primary:hover:not(:disabled) {
-  transform: translateY(-2px);
-  filter: brightness(1.1);
-  box-shadow: 0 6px 20px rgba(255, 63, 182, 0.45);
-}
-
-.btn-primary:disabled,
-.btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  transform: none;
-  box-shadow: none;
-  filter: none;
-}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
 
 .btn-secondary {
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--line);
+  color: var(--ink-2);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--line-2);
+  color: var(--ink);
 }
 
-.input {
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 12px 16px;
-  color: white;
-  font-size: 0.9rem;
-  transition: border-color 0.2s;
+/* Nút bóng mờ: bề mặt yên tĩnh, chỉ ICON mang màu.
+   Đây là chỗ concept khác app cũ nhiều nhất. Tám nút tám màu bão hoà đứng cạnh
+   nhau thì không nút nào nổi, và màu mất hết nghĩa. Để nền xám hết, icon mang
+   hue, thì màu quay lại làm đúng việc của nó: phân loại. */
+.btn-ghost {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: var(--line);
+  color: var(--ink-2);
 }
+
+.btn-ghost:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tint, #ffffff) 10%, rgba(255, 255, 255, 0.04));
+  border-color: color-mix(in srgb, var(--tint, #ffffff) 30%, transparent);
+  color: var(--ink);
+}
+
+/* lucide vẽ bằng currentColor, nên đặt color lên svg là đủ tô icon. */
+.btn-ghost svg { color: var(--tint, var(--ink-2)); }
+
+/* Biến thể đậm hơn: dùng cho trạng thái ĐANG chạy, khi nút đổi nghĩa thành
+   "bấm để dừng". Nền có màu là tín hiệu nút này không còn ở trạng thái nghỉ. */
+.btn-tinted {
+  background: color-mix(in srgb, var(--tint) 12%, transparent);
+  border-color: color-mix(in srgb, var(--tint) 30%, transparent);
+  color: var(--tint);
+}
+
+.btn-tinted:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tint) 19%, transparent);
+}
+
+.btn-tinted svg { color: var(--tint); }
+
+.btn-primary:disabled,
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: none;
+  box-shadow: none;
+}
+
+/* ── Ô nhập ───────────────────────────────────────────────────────────── */
+/* Không đặt width: 100% ở đây. Nhiều ô trong App.jsx (select "Kiểu chạy",
+   ô nhập tên) dựa vào bề rộng tự nhiên; ép 100% là chúng giãn hết hàng. */
+.input {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--ink);
+  font-family: var(--ui);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.input::placeholder { color: var(--ink-3); }
 
 .input:focus {
-  outline: none;
-  border-color: var(--primary);
+  border-color: rgba(255, 63, 182, 0.45);
+  background: rgba(0, 0, 0, 0.4);
 }
 
-input[type="date"].input {
+select.input, select {
   color-scheme: dark;
 }
+
+input[type="date"].input { color-scheme: dark; }
 
 input[type="date"].input::-webkit-calendar-picker-indicator {
   filter: invert(1);
   cursor: pointer;
 }
 
-.card {
-  padding: 24px;
-  border-radius: 16px;
-  transition: transform 0.2s, border-color 0.2s;
-}
-
-.card:hover {
-  border-color: rgba(255, 63, 182, 0.3);
-}
-
+/* ── Vặt ──────────────────────────────────────────────────────────────── */
 @keyframes pulse {
-  0% { opacity: 1; }
-  50% { opacity: 0.5; }
+  0%   { opacity: 1; }
+  50%  { opacity: 0.5; }
   100% { opacity: 1; }
 }
 
-.animate-pulse {
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-}
+.animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 
 .badge {
-  padding: 4px 10px;
-  border-radius: 6px;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.05em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
 }
 
-.modal-scroll::-webkit-scrollbar {
-  width: 5px;
+/* ── Thanh cuộn của trang ─────────────────────────────────────────────────
+   Cả cửa sổ cuộn, không phải riêng <main>. Nhờ vậy thanh cuộn là của trình
+   duyệt nên nằm đúng mép phải màn hình, và không còn đè lên cột card nào. */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 3px;
 }
-.modal-scroll::-webkit-scrollbar-track {
-  background: transparent;
-}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.18); }
+html { scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.12) transparent; }
+
+/* ── Thanh cuộn modal ─────────────────────────────────────────────────── */
+.modal-scroll::-webkit-scrollbar { width: 5px; }
+.modal-scroll::-webkit-scrollbar-track { background: transparent; }
 .modal-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 63, 182, 0.25);
-  border-radius: 20px;
+  background: rgba(255, 63, 182, 0.22);
+  border-radius: 3px;
 }
-.modal-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 63, 182, 0.45);
-}
+.modal-scroll::-webkit-scrollbar-thumb:hover { background: rgba(255, 63, 182, 0.4); }
+.modal-scroll { scrollbar-width: thin; scrollbar-color: rgba(255, 63, 182, 0.22) transparent; }
 
-/* Firefox */
-.modal-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 63, 182, 0.25) transparent;
-}
-
-/* ── Modal system ── */
+/* ── Modal ────────────────────────────────────────────────────────────── */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -149,14 +325,14 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(3, 4, 7, 0.72);
   backdrop-filter: blur(6px);
   animation: fadeIn 0.2s ease;
   padding: 20px;
 }
 
 .modal-card {
-  border-radius: 20px;
+  border-radius: 18px;
   overflow: hidden;
   animation: modalSlideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   display: flex;
@@ -168,8 +344,8 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 24px;
-  border-bottom: 1px solid var(--border);
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--line);
   flex-shrink: 0;
 }
 
@@ -178,44 +354,41 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   align-items: center;
   gap: 10px;
   margin: 0;
-  font-size: 1.1rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-family: var(--display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
 }
 
 .modal-close {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.03);
-  color: var(--text-muted);
+  color: var(--ink-2);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .modal-close:hover {
   background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
-  border-color: rgba(255, 255, 255, 0.15);
+  color: var(--ink);
+  border-color: var(--line-2);
 }
 
-.modal-body {
-  padding: 20px 24px;
-  overflow-y: auto;
-  flex: 1;
-}
+.modal-body { padding: 18px 22px; overflow-y: auto; flex: 1; }
 
 .modal-footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  padding: 14px 24px;
-  border-top: 1px solid var(--border);
+  padding: 13px 22px;
+  border-top: 1px solid var(--line);
   flex-shrink: 0;
 }
 
@@ -229,101 +402,103 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* ── Stats modal specifics ── */
+/* ── Modal thống kê ───────────────────────────────────────────────────── */
 .stats-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .stats-summary-card {
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 14px 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  padding: 13px 16px;
   text-align: center;
-  transition: border-color 0.2s;
+  transition: border-color 0.18s ease;
 }
 
-.stats-summary-card:hover {
-  border-color: rgba(255, 63, 182, 0.25);
-}
+.stats-summary-card:hover { border-color: var(--line-2); }
 
+/* Con số để trần, dùng mono tabular. Chữ tô gradient đọc kém ở cỡ lớn và
+   trông như trang trí; ở đây con số mới là nội dung. */
 .stats-summary-value {
-  font-size: 1.5rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  background: linear-gradient(135deg, var(--primary), var(--accent));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
 }
 
 .stats-summary-label {
-  font-size: 0.7rem;
-  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.15em;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  margin-top: 2px;
+  color: var(--ink-3);
+  margin-top: 5px;
 }
 
 .stats-profile-card {
-  background: rgba(255, 255, 255, 0.02);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 14px 18px;
-  margin-bottom: 10px;
-  transition: border-color 0.2s;
+  position: relative;
+  overflow: hidden;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  --rail: var(--sky);
+  transition: border-color 0.18s ease;
 }
 
-.stats-profile-card.active {
-  border-color: rgba(255, 63, 182, 0.3);
+/* Cùng ngôn ngữ vạch đèn như card profile ngoài trang chính. */
+.stats-profile-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--rail);
 }
 
-.stats-profile-card.done {
-  border-color: rgba(16, 185, 129, 0.3);
-}
+.stats-profile-card.done { --rail: var(--green); }
+.stats-profile-card.error { --rail: var(--red); }
 
 .stats-profile-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   margin-bottom: 8px;
 }
 
 .stats-profile-name {
-  font-weight: 700;
-  font-size: 0.88rem;
+  font-weight: 600;
+  font-size: 12.5px;
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .stats-profile-status {
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 20px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
-.stats-profile-status.running {
-  background: rgba(255, 63, 182, 0.12);
-  color: var(--primary);
-}
-
-.stats-profile-status.done {
-  background: rgba(16, 185, 129, 0.12);
-  color: var(--success);
-}
-
-.stats-profile-status.error {
-  background: rgba(239, 68, 68, 0.12);
-  color: var(--error);
-}
+.stats-profile-status.running { background: rgba(56, 189, 248, 0.12); color: var(--sky); }
+.stats-profile-status.done    { background: rgba(34, 211, 154, 0.12); color: var(--green); }
+.stats-profile-status.error   { background: rgba(255, 107, 107, 0.12); color: var(--red); }
 
 .stats-progress-bar {
-  height: 6px;
+  height: 4px;
   background: rgba(255, 255, 255, 0.05);
   border-radius: 10px;
   overflow: hidden;
@@ -332,19 +507,19 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
 .stats-progress-fill {
   height: 100%;
   border-radius: 10px;
-  background: linear-gradient(90deg, var(--primary), var(--secondary));
+  background: linear-gradient(90deg, var(--pink), var(--indigo));
   transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .stats-log-panel {
-  margin-top: 14px;
+  margin-top: 12px;
   max-height: 280px;
   overflow-y: auto;
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  font-size: 0.76rem;
-  font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 11.5px;
+  font-family: var(--mono);
 }
 
 .stats-log-row {
@@ -354,20 +529,15 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   gap: 10px;
   padding: 7px 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.03);
-  transition: background 0.15s;
+  transition: background-color 0.15s ease;
 }
 
-.stats-log-row:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
+.stats-log-row:hover { background: rgba(255, 255, 255, 0.02); }
 
-.stats-log-date {
-  color: var(--text-muted);
-  white-space: nowrap;
-}
+.stats-log-date { color: var(--ink-3); white-space: nowrap; }
 
 .stats-log-views {
-  font-weight: 600;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
@@ -377,40 +547,37 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
-  color: var(--text-muted);
+  color: var(--ink-2);
 }
 
 .stats-profile-followers {
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-}
-
-.stats-log-badge {
-  font-size: 0.65rem;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 4px;
+  color: var(--ink-2);
+  font-size: 10.5px;
   white-space: nowrap;
 }
 
-.stats-log-badge.restricted {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--error);
+.stats-log-badge {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
-.stats-log-badge.ok {
-  background: rgba(16, 185, 129, 0.12);
-  color: var(--success);
-}
+.stats-log-badge.restricted { background: rgba(255, 107, 107, 0.14); color: var(--red); }
+.stats-log-badge.ok         { background: rgba(34, 211, 154, 0.12); color: var(--green); }
 
 .stats-empty-state {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  padding: 32px 20px;
-  color: var(--text-muted);
+  padding: 30px 20px;
+  color: var(--ink-2);
+  font-size: 12.5px;
   text-align: center;
 }
 
@@ -418,14 +585,14 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-top: 14px;
-  padding: 12px 18px;
-  border-radius: 14px;
-  background: rgba(16, 185, 129, 0.08);
-  border: 1px solid rgba(16, 185, 129, 0.2);
-  font-weight: 700;
-  font-size: 0.88rem;
-  color: var(--success);
+  margin-top: 12px;
+  padding: 11px 16px;
+  border-radius: 12px;
+  background: rgba(34, 211, 154, 0.07);
+  border: 1px solid rgba(34, 211, 154, 0.22);
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--green);
 }
 
 .stats-error-banner {
@@ -433,17 +600,18 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
-  padding: 10px 16px;
-  border-radius: 12px;
-  background: rgba(239, 68, 68, 0.08);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  font-size: 0.82rem;
-  color: var(--error);
+  padding: 10px 15px;
+  border-radius: 11px;
+  background: rgba(255, 107, 107, 0.07);
+  border: 1px solid rgba(255, 107, 107, 0.22);
+  font-size: 12.5px;
+  color: var(--red);
 }
 
 .stats-progress-count {
-  font-size: 0.75rem;
-  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
 
@@ -452,6 +620,12 @@ input[type="date"].input::-webkit-calendar-picker-indicator {
   to   { transform: rotate(360deg); }
 }
 
-.stats-spinner {
-  animation: spin 1s linear infinite;
+.stats-spinner { animation: spin 1s linear infinite; }
+
+/* Máy nào bật "giảm chuyển động" thì bỏ hết hiệu ứng chạy vòng — vạch đèn và
+   màu vẫn nói đủ điều cần nói. */
+@media (prefers-reduced-motion: reduce) {
+  .card.is-running::after,
+  .animate-pulse,
+  .stats-spinner { animation: none; }
 }
