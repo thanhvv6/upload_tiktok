@@ -82,6 +82,9 @@ const ProfileCard = React.memo(React.forwardRef(({
     : (profile.status || 'idle');
   const isRunning = ['uploading', 'engaging', 'logging_in', 'changing_avatar', 'adding_favorite_music']
     .includes(effectiveStatus);
+  // Đang xếp hàng chờ slot thì chưa mở trình duyệt, nhưng cũng không được bấm
+  // chạy lại hay chen việc khác vào -- coi như bận y như đang đăng.
+  const isUploadBusy = profile.status === 'uploading' || profile.status === 'queued';
 
   return (
     <motion.div
@@ -326,14 +329,14 @@ const ProfileCard = React.memo(React.forwardRef(({
             className={`btn ${profile.status === 'uploading' ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => onStart(profile.id)}
             disabled={profile.status === 'uploading' || isEngaging}
-            style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': profile.status === 'uploading' ? 'var(--sky)' : 'var(--pink)' }}
+            style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': profile.status === 'uploading' ? 'var(--sky)' : profile.status === 'queued' ? 'var(--indigo)' : 'var(--pink)' }}
           >
             {profile.status === 'uploading' ? (
               <RefreshCw size={13} className="animate-pulse" />
             ) : (
               <Play size={13} fill="white" />
             )}
-            {profile.status === 'uploading' ? 'ACTIVE' : 'START'}
+            {profile.status === 'uploading' ? 'ACTIVE' : profile.status === 'queued' ? 'CHẠY NGAY' : 'START'}
           </button>
         </div>
 
@@ -342,7 +345,7 @@ const ProfileCard = React.memo(React.forwardRef(({
           <button
             className={`btn ${isEngaging ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => isEngaging ? onStopEngage(profile.id) : onEngage(profile.id)}
-            disabled={profile.status === 'uploading'}
+            disabled={isUploadBusy}
             style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': isEngaging ? 'var(--red)' : 'var(--indigo)' }}
           >
             <Heart size={13} />
@@ -352,7 +355,7 @@ const ProfileCard = React.memo(React.forwardRef(({
           <button
             className={`btn ${isLoggingIn ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => isLoggingIn ? onStopLoginTikTok(profile.id) : onLoginTikTok(profile.id)}
-            disabled={profile.status === 'uploading' || (!profile.email && !profile.pass)}
+            disabled={isUploadBusy || (!profile.email && !profile.pass)}
             style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': isLoggingIn ? 'var(--red)' : 'var(--green)' }}
           >
             <LogIn size={14} />
@@ -365,7 +368,7 @@ const ProfileCard = React.memo(React.forwardRef(({
           <button
             className={`btn ${isChangingAvatar ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => onChangeAvatar(profile.id)}
-            disabled={profile.status === 'uploading' || isChangingAvatar}
+            disabled={isUploadBusy || isChangingAvatar}
             style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': 'var(--sky)' }}
           >
             <Camera size={13} />
@@ -375,7 +378,7 @@ const ProfileCard = React.memo(React.forwardRef(({
           <button
             className={`btn ${isAddingFavoriteMusic ? 'btn-tinted' : 'btn-ghost'}`}
             onClick={() => onAddFavoriteMusic(profile.id)}
-            disabled={profile.status === 'uploading' || isAddingFavoriteMusic}
+            disabled={isUploadBusy || isAddingFavoriteMusic}
             style={{ display: 'flex', flex: 1, minWidth: 0, padding: '7px 8px', borderRadius: '8px', gap: '4px', justifyContent: 'center', fontSize: '0.78rem', fontWeight: '600', '--tint': 'var(--amber)' }}
           >
             <Music size={13} />
@@ -818,18 +821,36 @@ const App = () => {
     }
   };
 
+  // Server bỏ qua profile hết video mà không mở trình duyệt. Không nói ra thì
+  // người bấm chỉ thấy "tích 7 mà chạy có 3" và tưởng app hỏng.
+  const describeSkipped = (skipped) => {
+    if (!Array.isArray(skipped) || skipped.length === 0) return '';
+    const reasonText = { no_videos: 'hết video', no_folder: 'không thấy thư mục', busy: 'đang bận' };
+    const groups = new Map();
+    for (const item of skipped) {
+      const key = reasonText[item.reason] || item.reason;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(item.name);
+    }
+    return [...groups.entries()]
+      .map(([reason, names]) => `bỏ qua ${names.length} (${reason}): ${names.join(', ')}`)
+      .join(' · ');
+  };
+
   const startAutomation = async (profileId = null) => {
     setIsLoading(true);
+    // Thông báo có kèm danh sách bị bỏ thì phải đứng lâu hơn mới đọc kịp.
+    let skipNoticeShown = false;
     try {
       if (profileId) {
-        await axios.post('/api/start', { 
+        const res = await axios.post('/api/start', { 
           profileId,
           limitUploads,
           uploadLimitCount
         });
         setMessage({
           type: 'success',
-          text: 'Automation started for profile'
+          text: `Đang chạy ngay ${res.data?.profile || 'profile'} (không chờ hàng đợi)`
         });
       } else {
         const profileIds = [...selectedForRun];
@@ -838,23 +859,26 @@ const App = () => {
           setIsLoading(false);
           return;
         }
-        await axios.post('/api/start', { 
+        const res = await axios.post('/api/start', { 
           profileIds, 
           runMode: bulkRunMode,
           limitUploads,
           uploadLimitCount
         });
-        setMessage({
-          type: 'success',
-          text:
-            bulkRunMode === 'sequential'
-              ? `Đã bật chạy tuần tự cho ${profileIds.length} profile (theo thứ tự đã chọn)`
-              : `Đã bật chạy cùng lúc cho ${profileIds.length} profile đã chọn`
-        });
+        const started = res.data?.count ?? profileIds.length;
+        const skipNote = describeSkipped(res.data?.skipped);
+        skipNoticeShown = !!skipNote;
+        const base =
+          bulkRunMode === 'sequential'
+            ? `Đã bật chạy tuần tự cho ${started}/${profileIds.length} profile (theo thứ tự đã chọn)`
+            : `Đã xếp hàng ${started}/${profileIds.length} profile đã chọn (chạy tối đa ${config.maxConcurrency || 2} cùng lúc)`;
+        setMessage({ type: skipNote ? 'info' : 'success', text: skipNote ? `${base} — ${skipNote}` : base });
       }
-      setTimeout(() => setMessage(null), 5000);
+      setTimeout(() => setMessage(null), skipNoticeShown ? 12000 : 5000);
     } catch (err) {
-      setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to start' });
+      const skipNote = describeSkipped(err.response?.data?.skipped);
+      const base = err.response?.data?.error || 'Failed to start';
+      setMessage({ type: 'error', text: skipNote ? `${base} — ${skipNote}` : base });
     }
     setIsLoading(false);
   };
@@ -1452,6 +1476,7 @@ const App = () => {
   const getStatusColor = (status) => {
     switch (status) {
       case 'uploading': return 'var(--accent)';
+      case 'queued': return 'var(--indigo)';
       case 'logging_in': return '#10B981';
       case 'engaging': return '#EC4899';
       case 'changing_avatar': return '#3B82F6';

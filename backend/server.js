@@ -472,8 +472,8 @@ const getPostDelayMinutes = () => {
 };
 
 // Cleanup: Reset any stuck profiles to "idle" on startup
-db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'logging_in', 'changing_avatar', 'adding_favorite_music')").run();
-console.log('Reset stuck profiles (uploading, logging_in, changing_avatar, adding_favorite_music) to idle');
+db.prepare("UPDATE profiles SET status = 'idle' WHERE status IN ('uploading', 'queued', 'logging_in', 'changing_avatar', 'adding_favorite_music')").run();
+console.log('Reset stuck profiles (uploading, queued, logging_in, changing_avatar, adding_favorite_music) to idle');
 
 function normalizeGroupId(value) {
     if (value === undefined) return undefined;
@@ -2924,10 +2924,26 @@ app.post('/api/start', async (req, res) => {
     if (profileId) {
         const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
         if (!profile) return res.status(404).json({ error: 'Profile not found' });
-        if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) return res.status(400).json({ error: 'Profile already running or processing a video' });
 
-        runSingleProfile(profile, !!limitUploads, Number(uploadLimitCount) || 0);
-        return res.json({ status: 'started', profile: profile.name });
+        // Đang xếp hàng KHÔNG phải lý do từ chối ở đây -- bấm START chính là để
+        // vượt hàng. Chỉ chặn khi trình duyệt của profile đó đang thật sự chạy.
+        if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+            return res.status(400).json({ error: 'Profile already running or processing a video' });
+        }
+
+        const { videos, missing } = listProfileVideos(profile);
+        if (missing || videos.length === 0) {
+            const reason = missing ? 'no_folder' : 'no_videos';
+            return res.status(400).json({
+                error: missing
+                    ? `Không tìm thấy thư mục video của ${profile.name}`
+                    : `${profile.name} không còn video nào trong thư mục`,
+                skipped: [{ id: profile.id, name: profile.name, reason }]
+            });
+        }
+
+        startProfileNow(profile, !!limitUploads, Number(uploadLimitCount) || 0);
+        return res.json({ status: 'started', profile: profile.name, skipped: [] });
     } else {
         const allRows = db.prepare('SELECT * FROM profiles').all();
         let profiles = allRows;
@@ -2938,23 +2954,27 @@ app.post('/api/start', async (req, res) => {
                 return res.status(400).json({ error: 'No matching profiles for the given selection' });
             }
         }
-        const idleProfiles = profiles.filter((p) => !runningProfiles.has(p.id) && !processingProfiles.has(p.id));
-        if (idleProfiles.length === 0) {
+        const { runnable, skipped } = partitionRunnable(profiles);
+        if (runnable.length === 0) {
+            const emptyOnes = skipped.filter((s) => s.reason === 'no_videos' || s.reason === 'no_folder');
             return res.status(400).json({
                 error:
-                    Array.isArray(profileIds) && profileIds.length > 0
-                        ? 'No idle profiles in selection (they may already be running)'
-                        : 'No idle profiles'
+                    emptyOnes.length > 0
+                        ? 'Không profile nào trong lựa chọn còn video để đăng'
+                        : Array.isArray(profileIds) && profileIds.length > 0
+                            ? 'No idle profiles in selection (they may already be running)'
+                            : 'No idle profiles',
+                skipped
             });
         }
 
         const mode = runMode === 'sequential' ? 'sequential' : 'parallel';
         if (mode === 'sequential') {
-            runAllSequential(idleProfiles, !!limitUploads, Number(uploadLimitCount) || 0).catch((err) => console.error('Sequential execution error:', err));
+            runAllSequential(runnable, !!limitUploads, Number(uploadLimitCount) || 0).catch((err) => console.error('Sequential execution error:', err));
         } else {
-            runAllParallel(idleProfiles, !!limitUploads, Number(uploadLimitCount) || 0);
+            runAllParallel(runnable, !!limitUploads, Number(uploadLimitCount) || 0);
         }
-        return res.json({ status: 'started', count: idleProfiles.length, runMode: mode });
+        return res.json({ status: 'started', count: runnable.length, runMode: mode, skipped });
     }
 });
 
@@ -2965,7 +2985,7 @@ app.post('/api/open-profile', async (req, res) => {
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
-    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId) || queuedProfileIds.has(profileId)) {
         return res.status(400).json({ error: 'Profile is currently running automation or processing a video' });
     }
 
@@ -3204,7 +3224,7 @@ app.post('/api/change-avatar', async (req, res) => {
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
-    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId) || queuedProfileIds.has(profileId)) {
         return res.status(400).json({ error: 'Profile is currently running automation or processing a video' });
     }
 
@@ -3570,7 +3590,7 @@ app.post('/api/add-favorite-music', async (req, res) => {
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
-    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId) || queuedProfileIds.has(profileId)) {
         return res.status(400).json({ error: 'Profile is currently running automation or processing a video' });
     }
 
@@ -3591,34 +3611,148 @@ app.post('/api/add-favorite-music', async (req, res) => {
 });
 
 
-async function runAllParallel(profilesToRun, limitUploads = false, uploadLimitCount = 0) {
-    const maxConcurrency = Number(getConfig('maxConcurrency', 2));
-    const queue = [...profilesToRun];
-    const active = [];
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm']);
 
-    async function processQueue() {
-        while (queue.length > 0) {
-            if (active.length >= maxConcurrency) {
-                await Promise.race(active);
-                continue;
-            }
-            const profile = queue.shift();
-            const promise = runSingleProfile(profile, limitUploads, uploadLimitCount).finally(() => {
-                active.splice(active.indexOf(promise), 1);
-            });
-            active.push(promise);
-        }
-        await Promise.all(active);
+// Đọc thư mục video của một profile. runSingleProfile và khâu kiểm tra trước khi
+// xếp hàng đều đi qua hàm này, để danh sách "bị bỏ vì hết video" báo lên giao
+// diện không bao giờ lệch với thứ mà lượt chạy thật sự nhìn thấy.
+function listProfileVideos(profile) {
+    const folder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+    if (!fs.existsSync(folder)) return { folder, videos: [], missing: true };
+    try {
+        const videos = fs.readdirSync(folder).filter((file) => VIDEO_EXTENSIONS.has(path.extname(file).toLowerCase()));
+        return { folder, videos, missing: false };
+    } catch (e) {
+        console.error(`[${profile.name}] Folder error:`, e.message);
+        return { folder, videos: [], missing: false, error: e.message };
     }
+}
 
-    processQueue().catch(err => console.error('Parallel execution error:', err));
+// Một hàng đợi đăng duy nhất cho MỌI đường vào: nút chạy hàng loạt lẫn nút START
+// trên từng card. Trước đây mỗi lần bấm dựng một hàng đợi riêng với biến đếm
+// riêng, nên bấm START vài card liên tiếp là mở vượt maxConcurrency trình duyệt
+// cùng lúc -- đúng cảnh 4 Chromium chạy song song trong khi cấu hình để 3.
+const uploadQueue = [];
+const queuedProfileIds = new Set();
+let activeUploadCount = 0;
+
+const setProfileStatus = (id, status) => db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run(status, id);
+
+function pumpUploadQueue() {
+    const maxConcurrency = Math.max(1, Number(getConfig('maxConcurrency', 2)) || 1);
+    while (activeUploadCount < maxConcurrency && uploadQueue.length > 0) {
+        const job = uploadQueue.shift();
+        queuedProfileIds.delete(job.profile.id);
+        activeUploadCount++;
+        runSingleProfile(job.profile, job.limitUploads, job.uploadLimitCount)
+            .catch((err) => console.error(`[${job.profile.name}] Upload job failed:`, err))
+            .finally(() => {
+                activeUploadCount--;
+                if (job.onDone) job.onDone();
+                pumpUploadQueue();
+            });
+    }
+}
+
+function dequeueProfile(id) {
+    const index = uploadQueue.findIndex((job) => job.profile.id === id);
+    if (index === -1) return null;
+    const [job] = uploadQueue.splice(index, 1);
+    queuedProfileIds.delete(id);
+    return job;
+}
+
+// Nút START trên từng card là quyền ưu tiên của người dùng: mở trình duyệt NGAY,
+// kể cả khi hàng đợi đã kín slot. Đây đúng là việc anh ấy cần khi đang có mấy
+// profile nằm chờ mà muốn đẩy một kênh lên chạy trước.
+//
+// Vẫn cộng vào activeUploadCount, nên hàng đợi tự chùng lại một slot: lượt chạy
+// tự động không chồng thêm trình duyệt lên trên cú bấm tay, và tổng số tự về
+// đúng maxConcurrency ngay khi có việc xong.
+function startProfileNow(profile, limitUploads = false, uploadLimitCount = 0) {
+    // Nếu profile đang nằm chờ trong hàng thì rút ra, không thì tới lượt nó lại
+    // chạy lần thứ hai. onDone của lượt tuần tự phải được giữ và gọi lại đúng.
+    const queuedJob = dequeueProfile(profile.id);
+    const onDone = queuedJob ? queuedJob.onDone : null;
+    // Lượt tuần tự giữ chỗ trong queuedProfileIds từ đầu nhưng chỉ đẩy job vào
+    // uploadQueue khi tới lượt. Nhả chỗ giữ ra, không thì vòng lặp tuần tự vẫn
+    // đẩy profile này lần nữa và nó chạy hai lần.
+    queuedProfileIds.delete(profile.id);
+
+    activeUploadCount++;
+    return runSingleProfile(profile, limitUploads, uploadLimitCount)
+        .catch((err) => console.error(`[${profile.name}] Upload job failed:`, err))
+        .finally(() => {
+            activeUploadCount--;
+            if (onDone) onDone();
+            pumpUploadQueue();
+        });
+}
+
+// Trả về danh sách profile thật sự nhận vào hàng đợi.
+function enqueueUploads(profilesToRun, limitUploads = false, uploadLimitCount = 0) {
+    const accepted = [];
+    for (const profile of profilesToRun) {
+        if (runningProfiles.has(profile.id) || queuedProfileIds.has(profile.id)) continue;
+        queuedProfileIds.add(profile.id);
+        uploadQueue.push({ profile, limitUploads, uploadLimitCount });
+        accepted.push(profile);
+    }
+    // Card nào chưa tới lượt vẫn phải nói ra là đang chờ, chứ đứng nguyên ở
+    // "idle" thì nhìn hệt như cú bấm không ăn.
+    for (const profile of accepted) setProfileStatus(profile.id, 'queued');
+    pumpUploadQueue();
+    return accepted;
+}
+
+function runAllParallel(profilesToRun, limitUploads = false, uploadLimitCount = 0) {
+    return enqueueUploads(profilesToRun, limitUploads, uploadLimitCount);
 }
 
 async function runAllSequential(profilesToRun, limitUploads = false, uploadLimitCount = 0) {
-    for (const profile of profilesToRun) {
-        if (runningProfiles.has(profile.id)) continue;
-        await runSingleProfile(profile, limitUploads, uploadLimitCount);
+    const pending = profilesToRun.filter((p) => !runningProfiles.has(p.id) && !queuedProfileIds.has(p.id));
+    for (const profile of pending) {
+        queuedProfileIds.add(profile.id);
+        setProfileStatus(profile.id, 'queued');
     }
+    try {
+        for (const profile of pending) {
+            // Đã có người bấm START vượt hàng cho profile này thì bỏ qua.
+            if (!queuedProfileIds.has(profile.id)) continue;
+            // Vẫn đi qua hàng đợi chung để lượt tuần tự không cộng thêm một
+            // trình duyệt nữa lên trên lượt song song đang chạy.
+            await new Promise((resolve) => {
+                uploadQueue.push({ profile, limitUploads, uploadLimitCount, onDone: resolve });
+                pumpUploadQueue();
+            });
+        }
+    } finally {
+        for (const profile of pending) queuedProfileIds.delete(profile.id);
+    }
+}
+
+// Tách lựa chọn thành phần chạy được và phần bị bỏ, kèm lý do, để giao diện nói
+// được vì sao số card chạy ít hơn số card đã tích.
+function partitionRunnable(profiles) {
+    const runnable = [];
+    const skipped = [];
+    for (const profile of profiles) {
+        if (runningProfiles.has(profile.id) || processingProfiles.has(profile.id) || queuedProfileIds.has(profile.id)) {
+            skipped.push({ id: profile.id, name: profile.name, reason: 'busy' });
+            continue;
+        }
+        const { videos, missing } = listProfileVideos(profile);
+        if (missing) {
+            skipped.push({ id: profile.id, name: profile.name, reason: 'no_folder' });
+            continue;
+        }
+        if (videos.length === 0) {
+            skipped.push({ id: profile.id, name: profile.name, reason: 'no_videos' });
+            continue;
+        }
+        runnable.push(profile);
+    }
+    return { runnable, skipped };
 }
 
 const describeScheduleInput = (input) => {
@@ -3803,39 +3937,36 @@ async function runSingleProfile(profile, limitUploads = false, uploadLimitCount 
     db.prepare('UPDATE profiles SET status = ?, last_run = ? WHERE id = ?').run('uploading', new Date().toISOString(), profile.id);
 
     try {
-        const videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
+        let videoFolder = profile.video_folder || getConfig('videoFolder', UPLOADS_DIR);
         let videos = [];
-        try {
-            if (specificFile) {
-                // Single-file mode: only upload this specific file
-                if (fs.existsSync(specificFile)) {
-                    videos = [path.basename(specificFile)];
-                    console.log(`[${profile.name}] Single-file mode: uploading ${specificFile}`);
-                } else {
-                    console.error(`[${profile.name}] Specific file not found: ${specificFile}`);
-                }
+        if (specificFile) {
+            // Single-file mode: only upload this specific file
+            if (fs.existsSync(specificFile)) {
+                videos = [path.basename(specificFile)];
+                console.log(`[${profile.name}] Single-file mode: uploading ${specificFile}`);
             } else {
-                if (!fs.existsSync(videoFolder)) {
-                    console.error(`[${profile.name}] Video folder does not exist: ${videoFolder}`);
-                    db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
-                    return;
-                }
-                videos = fs.readdirSync(videoFolder).filter(file => {
-                    const ext = path.extname(file).toLowerCase();
-                    return ext === '.mp4' || ext === '.mov' || ext === '.webm';
-                });
-                console.log(`[${profile.name}] Found ${videos.length} videos in ${videoFolder}`);
+                console.error(`[${profile.name}] Specific file not found: ${specificFile}`);
             }
-        } catch (e) {
-            console.error(`[${profile.name}] Folder error:`, e.message);
+        } else {
+            const found = listProfileVideos(profile);
+            videoFolder = found.folder;
+            if (found.missing) {
+                console.error(`[${profile.name}] Video folder does not exist: ${videoFolder}`);
+                db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('error', profile.id);
+                return;
+            }
+            videos = found.videos;
+            console.log(`[${profile.name}] Found ${videos.length} videos in ${videoFolder}`);
         }
 
         // Determine the actual folder to use (specificFile may be in a different folder)
         const actualFolder = specificFile ? path.dirname(specificFile) : videoFolder;
 
         if (videos.length === 0) {
+            // 'no_videos' chứ không phải 'idle': card phải đọc ra được là nó bị bỏ
+            // qua, chứ về idle thì trông y như chưa bao giờ được bấm chạy.
             console.log(`[${profile.name}] No videos found in ${actualFolder}. Skipping browser launch.`);
-            db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('idle', profile.id);
+            db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('no_videos', profile.id);
             return;
         }
 
@@ -5296,7 +5427,7 @@ app.post('/api/engage', async (req, res) => {
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
-    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId) || queuedProfileIds.has(profileId)) {
         return res.status(400).json({ error: 'Profile is currently running upload automation or processing a video' });
     }
     if (engagingProfiles.has(profileId)) {
@@ -5348,7 +5479,7 @@ app.post('/api/login-tiktok', async (req, res) => {
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
 
-    if (runningProfiles.has(profileId) || processingProfiles.has(profileId)) {
+    if (runningProfiles.has(profileId) || processingProfiles.has(profileId) || queuedProfileIds.has(profileId)) {
         return res.status(400).json({ error: 'Profile is currently running upload automation or processing a video' });
     }
     if (engagingProfiles.has(profileId)) {
@@ -6909,14 +7040,18 @@ function checkAndRunSchedules() {
 
         if (scheduledProfiles.length > 0) {
             console.log(`[Scheduler] Found ${scheduledProfiles.length} profiles to run at ${currentTime}`);
-            scheduledProfiles.forEach(profile => {
-                if (!runningProfiles.has(profile.id) && !processingProfiles.has(profile.id)) {
-                    console.log(`[Scheduler] Triggering automation for: ${profile.name}`);
-                    runSingleProfile(profile).catch(err => console.error(`[Scheduler] Error running ${profile.name}:`, err));
-                } else {
-                    console.log(`[Scheduler] Profile ${profile.name} is already running or processing a video, skipping scheduled trigger.`);
+            const ready = scheduledProfiles.filter((profile) => {
+                if (runningProfiles.has(profile.id) || processingProfiles.has(profile.id) || queuedProfileIds.has(profile.id)) {
+                    console.log(`[Scheduler] Profile ${profile.name} is already running, queued or processing a video, skipping scheduled trigger.`);
+                    return false;
                 }
+                return true;
             });
+            // Đi qua hàng đợi chung. Trước đây lịch bắn thẳng runSingleProfile,
+            // nên một mốc giờ trùng nhiều kênh là mở bằng đó trình duyệt cùng lúc.
+            for (const profile of enqueueUploads(ready)) {
+                console.log(`[Scheduler] Triggering automation for: ${profile.name}`);
+            }
         }
     } catch (err) {
         console.error('[Scheduler] Database error:', err);

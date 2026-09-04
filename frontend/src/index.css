@@ -115,6 +115,7 @@ h1, h2, h3 { font-family: var(--display); letter-spacing: -0.02em; }
 
 .card.s-uploading,
 .card.s-scanning              { --rail: var(--sky); }
+.card.s-queued                { --rail: var(--indigo); }
 .card.s-success               { --rail: var(--green); }
 .card.s-error                 { --rail: var(--red); }
 .card.s-no_videos             { --rail: var(--amber); }
