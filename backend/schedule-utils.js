@@ -372,3 +372,55 @@ export function parseStudioScheduleLabel(text, now = new Date()) {
         distance(candidate) < distance(best) ? candidate : best
     );
 }
+
+/**
+ * Ước lượng loạt lịch của lượt chạy KẾ TIẾP, để trả lời câu "bấm chạy bây giờ
+ * thì video cuối lên lúc mấy giờ".
+ *
+ * Dùng lại đúng hai hàm mà luồng upload thật sự gọi, nên con số hiện trên giao
+ * diện khớp với mốc sẽ được điền vào form -- tự viết lại phép tính ở đây là
+ * cách chắc chắn nhất để hai bên trôi khỏi nhau sau vài lần sửa.
+ *
+ * Mốc cuối tính bằng công thức đóng `đầu + (n-1) × interval` thay vì lặp n lần:
+ * cú nhảy vì sàn lead chỉ xảy ra ở mốc đầu, từ mốc thứ hai trở đi cơ sở đã vượt
+ * `now + lead` nên chỉ còn cộng đều. Endpoint /api/profiles chạy phép này cho
+ * 63 profile mỗi 5 giây, mà có profile chứa hơn 600 video.
+ */
+export function projectRunSchedule({
+    lastScheduledAt,
+    videoCount,
+    intervalMinutes = 5,
+    postDelayMinutes = 0,
+    autoIncrement = false,
+    isScheduled = false,
+    uploadCount = 0,
+    now = new Date(),
+} = {}) {
+    // Không bật hẹn giờ mà cũng không nối tiếp thì video đăng ngay, chẳng có
+    // loạt lịch nào để ước lượng.
+    const delay = Number(postDelayMinutes) || 0;
+    if (delay <= 0 && !autoIncrement) return null;
+
+    const available = Number(videoCount) || 0;
+    // Profile bật lịch cố định chỉ đăng đúng upload_count video mỗi lượt, nên
+    // đếm cả folder là ước lượng vống lên.
+    const cap = isScheduled && Number(uploadCount) > 0 ? Number(uploadCount) : available;
+    const count = Math.min(available, cap);
+    if (count <= 0) return null;
+
+    const step = Number(intervalMinutes) || 5;
+    const anchor = lastScheduledAt ? new Date(lastScheduledAt) : null;
+    const hasAnchor = anchor instanceof Date && !Number.isNaN(anchor.getTime());
+
+    const first = hasAnchor
+        ? computeAutoIncrementTime({
+            lastScheduledTime: anchor,
+            intervalMinutes: step,
+            now,
+            minLeadMinutes: SCHEDULE_MIN_LEAD_MINUTES,
+        })
+        : computeDelayedFirstTime({ delayMinutes: delay, now });
+
+    const last = new Date(first.getTime() + (count - 1) * step * 60 * 1000);
+    return { first, last, count, intervalMinutes: step };
+}

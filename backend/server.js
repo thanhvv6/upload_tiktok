@@ -11,6 +11,7 @@ import {
     computeNextScheduledTime,
     computeAutoIncrementTime,
     computeDelayedFirstTime,
+    projectRunSchedule,
     POST_DELAY_MIN_MINUTES,
     POST_DELAY_MAX_MINUTES,
     SCHEDULE_MIN_LEAD_MINUTES,
@@ -582,11 +583,33 @@ app.get('/api/profiles', (req, res) => {
         `
         )
         .all();
-    res.json(profiles.map(p => ({
-        ...p,
-        schedules: p.schedules ? p.schedules.split(',') : [],
-        ...getFolderVideoStatus(p.video_folder)
-    })));
+    // Đọc một lần cho cả lượt: cấu hình và đồng hồ giống nhau với mọi profile,
+    // mà endpoint này bị poll 5 giây một lần.
+    const postDelayMinutes = getPostDelayMinutes();
+    const now = new Date();
+
+    res.json(profiles.map(p => {
+        const folder = getFolderVideoStatus(p.video_folder);
+        // Ước lượng "bấm chạy bây giờ thì video cuối lên lúc mấy giờ".
+        const projection = projectRunSchedule({
+            lastScheduledAt: p.last_scheduled_at,
+            videoCount: folder.video_count,
+            intervalMinutes: p.schedule_interval,
+            postDelayMinutes,
+            autoIncrement: p.auto_increment_schedule === 1,
+            isScheduled: p.is_scheduled === 1,
+            uploadCount: p.upload_count,
+            now,
+        });
+        return {
+            ...p,
+            schedules: p.schedules ? p.schedules.split(',') : [],
+            ...folder,
+            projected_first_schedule: projection ? projection.first.toISOString() : null,
+            projected_last_schedule: projection ? projection.last.toISOString() : null,
+            projected_count: projection ? projection.count : 0,
+        };
+    }));
 });
 
 app.post('/api/profiles', (req, res) => {

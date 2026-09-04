@@ -219,6 +219,7 @@ const ProfileCard = React.memo(React.forwardRef(({
                 ? (() => { const g = groups.find(gr => gr.id === profile.group_id); return g ? g.name : '—'; })()
                 : 'No group'}
             </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexShrink: 0 }}>
               {(() => {
                 const status = profile.folder_status || 'not_set';
                 const count = profile.video_count || 0;
@@ -253,6 +254,44 @@ const ProfileCard = React.memo(React.forwardRef(({
                   </div>
                 );
               })()}
+
+              {/* Mốc dự kiến của video CUỐI nếu bấm chạy bây giờ. Dấu ≈ để không
+                  lẫn với mốc cam ở trên — mốc kia là lịch thật đã đặt xong. */}
+              {(() => {
+                if (!profile.projected_last_schedule) return null;
+                const end = new Date(profile.projected_last_schedule);
+                if (Number.isNaN(end.getTime())) return null;
+
+                const fmt = (d) => `${d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} ${d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}`;
+                const start = profile.projected_first_schedule ? new Date(profile.projected_first_schedule) : null;
+                const step = profile.schedule_interval || 5;
+                const title = start && !Number.isNaN(start.getTime())
+                  ? `Chạy bây giờ: ${profile.projected_count} video, cách nhau ${step} phút — video đầu ${fmt(start)}, video cuối ${fmt(end)}`
+                  : `Chạy bây giờ: video cuối lên lúc ${fmt(end)}`;
+
+                return (
+                  <div
+                    title={title}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: '3px 8px',
+                      borderRadius: '999px',
+                      fontSize: '0.65rem',
+                      fontWeight: '600',
+                      color: 'var(--amber)',
+                      background: 'rgba(251, 191, 36, 0.12)',
+                      whiteSpace: 'nowrap',
+                      userSelect: 'none'
+                    }}
+                  >
+                    <Clock size={11} />
+                    {'\u2248'} {fmt(end)}
+                  </div>
+                );
+              })()}
+            </div>
           </div>
         </div>
       </div>
