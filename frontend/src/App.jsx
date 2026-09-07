@@ -39,6 +39,19 @@ import {
 
 import { motion, AnimatePresence } from 'framer-motion';
 import StatsModal from './components/StatsModal';
+
+/**
+ * Tách ô nhạc của profile thành danh sách bài.
+ *
+ * Phải khớp với parseMusicList bên backend/music-list.js: cùng một chuỗi
+ * music_search được cả giao diện và lượt chạy đọc, nên hai bên mà tách khác
+ * nhau thì số bài hiện trên màn hình sẽ lệch với số bài thật sự được dùng.
+ */
+const splitMusicList = (text) => {
+  if (typeof text !== 'string') return [];
+  return text.split(/[\n\r|]+/).map((line) => line.trim()).filter((line) => line.length > 0);
+};
+
 const ProfileCard = React.memo(React.forwardRef(({
   profile,
   isSelected,
@@ -425,7 +438,10 @@ const App = () => {
   const [changingAvatarProfiles, setChangingAvatarProfiles] = useState(() => new Set());
   const [addingFavoriteMusicProfiles, setAddingFavoriteMusicProfiles] = useState(() => new Set());
   const [avatarSelections, setAvatarSelections] = useState({}); // profileId -> filePath
-  const [musicSearchTerms, setMusicSearchTerms] = useState({}); // profileId -> searchTerm
+  const [musicSearchTerms, setMusicSearchTerms] = useState({}); // profileId -> danh sách nhạc, mỗi bài một dòng
+  const [musicDrafts, setMusicDrafts] = useState({}); // profileId -> bài đang gõ ở ô thêm mới
+  const [musicEditing, setMusicEditing] = useState(null); // { profileId, index } của dòng đang sửa
+  const [musicEditValue, setMusicEditValue] = useState('');
   const [limitUploads, setLimitUploads] = useState(false);
   const [uploadLimitCount, setUploadLimitCount] = useState(1);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -1425,15 +1441,19 @@ const App = () => {
   };
 
   const handleAddFavoriteMusic = async (profileId) => {
-    const searchTerm = musicSearchTerms[profileId];
-    if (!searchTerm || !searchTerm.trim()) {
-      setMessage({ type: 'error', text: 'Please enter a search term in Edit settings' });
+    // Ô nhạc chỉ nạp vào state khi mở Edit, nên profile chưa mở lần nào vẫn
+    // phải đọc được danh sách từ dữ liệu profile.
+    const profile = profiles.find(p => p.id === profileId);
+    const rawList = musicSearchTerms[profileId] ?? profile?.music_search ?? '';
+    const songs = splitMusicList(rawList);
+    if (songs.length === 0) {
+      setMessage({ type: 'error', text: 'Chưa có bài nhạc nào — thêm vào trong Edit settings' });
       return;
     }
     try {
       setAddingFavoriteMusicProfiles(prev => new Set([...prev, profileId]));
-      await axios.post('/api/add-favorite-music', { profileId, searchTerm: searchTerm.trim() });
-      setMessage({ type: 'success', text: 'Adding favorite music! Browser will open shortly.' });
+      await axios.post('/api/add-favorite-music', { profileId, searchTerm: songs.join('\n') });
+      setMessage({ type: 'success', text: `Đang lưu yêu thích ${songs.length} bài! Browser will open shortly.` });
       setTimeout(() => setMessage(null), 5000);
     } catch (err) {
       setAddingFavoriteMusicProfiles(prev => {
@@ -1447,10 +1467,54 @@ const App = () => {
 
   const handleUpdateMusicSearchTerm = async (profileId, value) => {
     setMusicSearchTerms(prev => ({ ...prev, [profileId]: value }));
+    // Giữ bản trong danh sách profile khớp luôn, để card đóng modal rồi bấm
+    // FAVORITES vẫn thấy danh sách vừa sửa mà không cần đợi lượt tải lại.
+    setProfiles(prev => prev.map(p => (p.id === profileId ? { ...p, music_search: value } : p)));
     try {
       await axios.patch(`/api/profiles/${profileId}`, { music_search: value });
     } catch (err) {
       console.error('Failed to save music_search:', err);
+    }
+  };
+
+  const handleAddMusicSong = (profileId) => {
+    const draft = (musicDrafts[profileId] || '').trim();
+    if (!draft) return;
+    const songs = splitMusicList(musicSearchTerms[profileId]);
+    handleUpdateMusicSearchTerm(profileId, [...songs, draft].join('\n'));
+    setMusicDrafts(prev => ({ ...prev, [profileId]: '' }));
+  };
+
+  const handleRemoveMusicSong = (profileId, index) => {
+    const songs = splitMusicList(musicSearchTerms[profileId]);
+    handleUpdateMusicSearchTerm(profileId, songs.filter((_, i) => i !== index).join('\n'));
+    setMusicEditing(null);
+  };
+
+  const handleStartEditMusicSong = (profileId, index, current) => {
+    setMusicEditing({ profileId, index });
+    setMusicEditValue(current);
+  };
+
+  // Sửa tại chỗ thay vì bắt xoá rồi gõ lại: các dòng này là tên bài kèm tên ca
+  // sĩ, gõ lại cả dòng chỉ để đổi một chữ vừa mất công vừa dễ sai thêm.
+  const handleCommitEditMusicSong = (profileId, index) => {
+    const next = musicEditValue.trim();
+    if (!next) return;
+    const songs = splitMusicList(musicSearchTerms[profileId]);
+    handleUpdateMusicSearchTerm(
+      profileId,
+      songs.map((song, i) => (i === index ? next : song)).join('\n')
+    );
+    setMusicEditing(null);
+  };
+
+  const updateProfileUseFavoriteMusic = async (id, enabled) => {
+    setProfiles(prev => prev.map(p => (p.id === id ? { ...p, use_favorite_music: enabled ? 1 : 0 } : p)));
+    try {
+      await axios.patch(`/api/profiles/${id}`, { use_favorite_music: enabled });
+    } catch (err) {
+      console.error('Failed to save use_favorite_music:', err);
     }
   };
 
@@ -2447,17 +2511,114 @@ const App = () => {
                             </div>
                           </div>
 
-                          {/* Favorite Music */}
-                          <div className="input-group">
-                            <label style={{ fontSize: '0.8rem', marginBottom: '6px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>Favorite Music (search)</label>
-                            <input
-                              className="input"
-                              style={{ padding: '8px 12px', fontSize: '0.85rem', width: '100%', boxSizing: 'border-box' }}
-                              placeholder="Search music to favorite..."
-                              value={musicSearchTerms[p.id] || ''}
-                              onChange={(e) => handleUpdateMusicSearchTerm(p.id, e.target.value)}
-                            />
-                          </div>
+                          {/* Favorite Music — danh sách chạy lần lượt theo thứ tự */}
+                          {(() => {
+                            const songs = splitMusicList(musicSearchTerms[p.id]);
+                            return (
+                              <div className="input-group">
+                                <label style={{ fontSize: '0.8rem', marginBottom: '2px', display: 'block', fontWeight: '600', color: 'var(--text-muted)' }}>
+                                  Favorite Music (search){songs.length > 0 ? ` — ${songs.length} bài` : ''}
+                                </label>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', display: 'block', marginBottom: '8px' }}>
+                                  Mỗi video lấy một bài theo thứ tự dưới đây, hết danh sách thì quay lại bài 1.
+                                </span>
+
+                                {songs.length > 0 && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '8px' }}>
+                                    {songs.map((song, idx) => {
+                                      const isEditing = musicEditing && musicEditing.profileId === p.id && musicEditing.index === idx;
+                                      return (
+                                        <div
+                                          key={`${idx}-${song}`}
+                                          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 10px', borderRadius: '8px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)' }}
+                                        >
+                                          <span style={{ fontSize: '0.7rem', fontWeight: '700', color: 'var(--text-muted)', minWidth: '18px', flexShrink: 0 }}>{idx + 1}.</span>
+
+                                          {isEditing ? (
+                                            <>
+                                              <input
+                                                autoFocus
+                                                className="input"
+                                                style={{ flex: 1, minWidth: 0, fontSize: '0.82rem', padding: '4px 8px' }}
+                                                value={musicEditValue}
+                                                onChange={(e) => setMusicEditValue(e.target.value)}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === 'Enter') { e.preventDefault(); handleCommitEditMusicSong(p.id, idx); }
+                                                  if (e.key === 'Escape') setMusicEditing(null);
+                                                }}
+                                              />
+                                              <button
+                                                type="button"
+                                                onClick={() => handleCommitEditMusicSong(p.id, idx)}
+                                                title="Lưu"
+                                                style={{ background: 'none', border: 'none', color: 'var(--success)', cursor: 'pointer', padding: '2px', display: 'flex', flexShrink: 0 }}
+                                              >
+                                                <Check size={15} />
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => setMusicEditing(null)}
+                                                title="Huỷ"
+                                                style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer', padding: '2px', display: 'flex', flexShrink: 0 }}
+                                              >
+                                                <X size={15} />
+                                              </button>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <span style={{ flex: 1, fontSize: '0.82rem', wordBreak: 'break-word', minWidth: 0 }}>{song}</span>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleStartEditMusicSong(p.id, idx, song)}
+                                                title="Sửa bài này"
+                                                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', opacity: 0.6, padding: '2px', display: 'flex', flexShrink: 0 }}
+                                              >
+                                                <Edit3 size={13} />
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleRemoveMusicSong(p.id, idx)}
+                                                title="Xoá bài này"
+                                                style={{ background: 'none', border: 'none', color: 'rgba(239, 68, 68, 0.6)', cursor: 'pointer', padding: '2px', display: 'flex', flexShrink: 0 }}
+                                              >
+                                                <X size={14} />
+                                              </button>
+                                            </>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                  <input
+                                    className="input"
+                                    style={{ flex: 1, minWidth: 0, padding: '8px 12px', fontSize: '0.85rem' }}
+                                    placeholder="Thêm bài nhạc..."
+                                    value={musicDrafts[p.id] || ''}
+                                    onChange={(e) => setMusicDrafts(prev => ({ ...prev, [p.id]: e.target.value }))}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        handleAddMusicSong(p.id);
+                                      }
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    className="btn btn-secondary"
+                                    onClick={() => handleAddMusicSong(p.id)}
+                                    disabled={!(musicDrafts[p.id] || '').trim()}
+                                    style={{ padding: '0 12px', fontSize: '0.8rem', flexShrink: 0 }}
+                                  >
+                                    <Plus size={16} style={{ marginRight: '6px' }} />
+                                    Add
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })()}
 
                           {/* Proxy Server */}
                           <div className="input-group">
@@ -2635,7 +2796,30 @@ const App = () => {
                                   <Music size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
                                   Set nhạc khi upload
                                 </span>
-                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: mở Edit video, chọn nhạc từ Favorites rồi Save.</span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>Bật: mở Edit video, chọn nhạc rồi Save.</span>
+                              </div>
+                            </label>
+                          </div>
+
+                          {/* Nguồn nhạc: tab Favorites hay search theo tên */}
+                          <div className="input-group">
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: p.set_music === 1 ? 'pointer' : 'not-allowed', padding: '8px 10px', borderRadius: '10px', background: 'rgba(255, 255, 255, 0.03)', border: '1px solid var(--border)', opacity: p.set_music === 1 ? 1 : 0.45 }}>
+                              <input
+                                type="checkbox"
+                                checked={p.use_favorite_music === 1}
+                                disabled={p.set_music !== 1}
+                                onChange={(e) => updateProfileUseFavoriteMusic(p.id, e.target.checked)}
+                                style={{ width: '16px', height: '16px', accentColor: 'var(--primary)', cursor: p.set_music === 1 ? 'pointer' : 'not-allowed', flexShrink: 0 }}
+                              />
+                              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: '700' }}>
+                                  <Heart size={14} color="var(--accent)" style={{ flexShrink: 0 }} />
+                                  Chọn nhạc từ Favorites
+                                </span>
+                                <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: '1px' }}>
+                                  Bật: lấy lần lượt theo vị trí trong tab Favorites, bỏ qua danh sách trên.
+                                  Tắt: search theo tên bài và đối chiếu tên ca sĩ.
+                                </span>
                               </div>
                             </label>
                           </div>
