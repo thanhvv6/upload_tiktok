@@ -40,6 +40,13 @@ import {
     syncProfileFolderOnGroupChange
 } from './profile-folder.js';
 import { createProfileRecord } from './profile-store.js';
+import {
+    parseMusicList,
+    pickMusicAt,
+    nextMusicIndex,
+    wrapIndex,
+    musicEntryMatches
+} from './music-list.js';
 import { getFolderVideoStatus } from './video-folder-status.js';
 import {
   createJob, getJob, addClient, removeClient,
@@ -325,7 +332,7 @@ try {
     console.error('Migration error (avatar_image column):', err);
 }
 
-// Migration: music_search — search term for adding favorite music
+// Migration: music_search — danh sách nhạc, mỗi bài một dòng
 try {
     const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
     const hasMusicSearch = tableInfo.some((col) => col.name === 'music_search');
@@ -335,6 +342,33 @@ try {
     }
 } catch (err) {
     console.error('Migration error (music_search column):', err);
+}
+
+// Migration: music_index — bài kế tiếp trong danh sách music_search. Lượt chạy
+// sau nối tiếp lượt trước chứ không quay lại bài đầu, nên con trỏ phải nằm
+// trong DB. Hàng cũ mặc định 0 tức là bắt đầu từ bài trên cùng.
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasMusicIndex = tableInfo.some((col) => col.name === 'music_index');
+    if (!hasMusicIndex) {
+        db.exec('ALTER TABLE profiles ADD COLUMN music_index INTEGER DEFAULT 0;');
+        console.log('Added music_index column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (music_index column):', err);
+}
+
+// Migration: use_favorite_music — chọn nhạc theo tab Favorites thay vì search
+// tên bài. Mặc định 0 nên profile cũ giữ nguyên cách search như trước.
+try {
+    const tableInfo = db.prepare('PRAGMA table_info(profiles)').all();
+    const hasUseFavorite = tableInfo.some((col) => col.name === 'use_favorite_music');
+    if (!hasUseFavorite) {
+        db.exec('ALTER TABLE profiles ADD COLUMN use_favorite_music INTEGER DEFAULT 0;');
+        console.log('Added use_favorite_music column to profiles table');
+    }
+} catch (err) {
+    console.error('Migration error (use_favorite_music column):', err);
 }
 
 // Migration: cookies — JSON cookie array for cookie-based login
@@ -1439,7 +1473,7 @@ app.post('/api/system/clear-debug', (req, res) => {
 });
 
 app.patch('/api/profiles/:id', (req, res) => {
-    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video, avatar_image } = req.body;
+    const { name, video_folder, proxy, is_scheduled, auto_increment_schedule, schedule_interval, set_music, use_favorite_music, upload_count, channel_ids, needs_render, remove_title, need_content_check, render_video_long, cookies, music_search, render_concat_video, avatar_image } = req.body;
     const profileId = req.params.id;
 
     // Check if profile exists
@@ -1497,6 +1531,11 @@ app.patch('/api/profiles/:id', (req, res) => {
         const val = is_scheduled ? 1 : 0;
         db.prepare('UPDATE profiles SET is_scheduled = ? WHERE id = ?').run(val, profileId);
     }
+    if (use_favorite_music !== undefined) {
+        db.prepare('UPDATE profiles SET use_favorite_music = ? WHERE id = ?')
+            .run(use_favorite_music ? 1 : 0, profileId);
+    }
+
     if (set_music !== undefined) {
         const val = set_music ? 1 : 0;
         db.prepare('UPDATE profiles SET set_music = ? WHERE id = ?').run(val, profileId);
@@ -3245,7 +3284,15 @@ app.post('/api/change-avatar', async (req, res) => {
 });
 
 
-async function addFavoriteMusic(profile, searchTerm) {
+/**
+ * Lưu yêu thích lần lượt từng bài trong danh sách nhạc của profile.
+ *
+ * Cả danh sách đi chung một phiên trình duyệt: mở trang upload, đẩy một video
+ * mồi lên rồi mở panel Sounds đúng một lần, sau đó với mỗi bài thì xoá ô tìm
+ * kiếm, gõ tên bài mới và bấm sao ở kết quả đầu. Khâu đợi video mồi xử lý xong
+ * mất tới vài phút, nên mở lại phiên cho từng bài sẽ tốn gấp nhiều lần.
+ */
+async function addFavoriteMusic(profile, searchTerms) {
     const profileId = profile.id;
     const userDataDir = path.join(PROFILES_DIR, profile.name);
 
@@ -3289,7 +3336,7 @@ async function addFavoriteMusic(profile, searchTerm) {
     addingFavoriteMusicProfiles.add(profileId);
     db.prepare("UPDATE profiles SET status = ? WHERE id = ?").run('adding_favorite_music', profileId);
 
-    log(`Searching for music: "${searchTerm}"`);
+    log(`Favoriting ${searchTerms.length} song(s): ${searchTerms.map((t) => `"${t}"`).join(', ')}`);
 
     try {
         const page = await browser.newPage();
@@ -3479,98 +3526,144 @@ async function addFavoriteMusic(profile, searchTerm) {
         log('Sounds panel ready. Waiting 4 seconds for UI stability before typing...');
         await page.waitForTimeout(4000);
 
-        // Step 6: Type search term using keyboard.type() to mimic real user input
-        log(`Setting search term: "${searchTerm}"`);
-        await searchInput.focus();
-        await searchInput.click();
-        await page.keyboard.type(searchTerm, { delay: 30 });
-        log('Search term filled, waiting for suggestions...');
-        await page.waitForTimeout(2000);
+        // Step 6: Lưu yêu thích từng bài, dùng lại panel Sounds đang mở.
+        // Một bài hỏng — không ra kết quả, không bấm được sao — chỉ làm hỏng
+        // bài đó; vòng lặp vẫn chạy tiếp để những bài còn lại được lưu.
+        let favorited = 0;
+        const notFavorited = [];
+        for (let songIndex = 0; songIndex < searchTerms.length; songIndex++) {
+            const searchTerm = searchTerms[songIndex];
+            const label = `[${songIndex + 1}/${searchTerms.length}]`;
+            log(`${label} Setting search term: "${searchTerm}"`);
 
-        await page.keyboard.press('Enter');
-        log('Enter pressed, waiting for new search results to load...');
+            // Xoá từ khoá của bài trước. Bài đầu tiên ô vẫn trống nên bước này
+            // không đổi gì, giữ chung một đường đi cho mọi bài.
+            const clearBtn = await page.$('[data-icon="x-circle-fill"], svg[data-icon="x-circle-fill"]').catch(() => null);
+            if (clearBtn) {
+                await clearBtn.click().catch(() => null);
+            } else {
+                await searchInput.focus().catch(() => null);
+                await searchInput.click({ clickCount: 3 }).catch(() => null);
+                await page.keyboard.press('Backspace').catch(() => null);
+            }
+            await page.waitForTimeout(1000);
 
-        // Wait a moment for TikTok to switch to loading state
-        await page.waitForTimeout(1000);
+            await searchInput.focus();
+            await searchInput.click();
+            await page.keyboard.type(searchTerm, { delay: 30 });
+            log(`${label} Search term filled, waiting for suggestions...`);
+            await page.waitForTimeout(2000);
 
-        try {
-            await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
-            log('Search results refreshed.');
-        } catch (e) {
-            log('Wait for search results timed out or failed. Proceeding anyway...');
-        }
-        await page.waitForTimeout(2000); // Short stabilization wait after refresh
+            await page.keyboard.press('Enter');
+            log(`${label} Enter pressed, waiting for new search results to load...`);
 
-        // Step 7: Click star/bookmark on first search result
-        // The star button is hidden until real mouse hover — use Playwright's native hover() (not JS dispatchEvent)
-        // which triggers React's synthetic event system properly
-        log('Looking for first search result...');
-        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results.png`) }).catch(() => null);
+            // Wait a moment for TikTok to switch to loading state
+            await page.waitForTimeout(1000);
 
-        // Find first music listitem (has data-item-id and MusicPanelMusicItem__wrap)
-        const firstItem = await page.$('div[role="listitem"][data-item-id]');
-        if (!firstItem) {
-            log('WARNING: No search results found');
-            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results.png`) }).catch(() => null);
-            return;
-        }
+            try {
+                await page.waitForSelector('div[role="listitem"][data-item-id]', { timeout: 30000 });
+                log(`${label} Search results refreshed.`);
+            } catch (e) {
+                log(`${label} Wait for search results timed out or failed. Proceeding anyway...`);
+            }
+            await page.waitForTimeout(2000); // Short stabilization wait after refresh
 
-        // Use Playwright's native hover to trigger React hover handlers
-        log('Hovering first result with Playwright native hover...');
-        await firstItem.hover();
-        await page.waitForTimeout(1500);
+            // Step 7: Click star/bookmark on first search result
+            // The star button is hidden until real mouse hover — use Playwright's native hover() (not JS dispatchEvent)
+            // which triggers React's synthetic event system properly
+            log(`${label} Reading search results...`);
+            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results_${songIndex + 1}.png`) }).catch(() => null);
 
-        // After hover, look for the star/bookmark button that should now appear
-        // It lives inside MusicPanelMusicItem__operation next to the plus-bold button
-        const starClicked = await page.evaluate(() => {
-            // Find the first music listitem and look inside its operation div
-            const item = document.querySelector('div[role="listitem"][data-item-id]');
-            if (!item) return 'no_item';
-
-            const opDiv = item.querySelector('[class*="operation"]');
-            if (!opDiv) return 'no_operation';
-
-            // Get all buttons in the operation area
-            const buttons = opDiv.querySelectorAll('button');
-            for (const btn of buttons) {
-                // Skip the plus-bold button
-                if (btn.querySelector('[data-icon="plus-bold"]')) continue;
-                // This should be the star/bookmark button
-                btn.click();
-                return 'clicked';
+            // Đối chiếu tên bài và tên ca sĩ trước khi bấm sao, đúng như khâu
+            // chọn nhạc lúc upload. Lấy bừa kết quả đầu là favorite nhầm bài
+            // của ca sĩ khác — TikTok trả về đầy bài trùng tên. Sai ở đây còn
+            // độc hơn: nhánh "chọn nhạc từ Favorites" lấy theo VỊ TRÍ chứ không
+            // đối chiếu gì, nên một bài nhầm nằm trong mục yêu thích sẽ được
+            // dùng đi dùng lại mà không có gì chặn.
+            const results = await readSoundItems(page);
+            if (results.length === 0) {
+                log(`${label} WARNING: no search result for "${searchTerm}". Skipping this song.`);
+                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results_${songIndex + 1}.png`) }).catch(() => null);
+                notFavorited.push(`${searchTerm} (no results)`);
+                continue;
             }
 
-            // Fallback: look for any [data-icon] that's not plus-bold
-            const icons = opDiv.querySelectorAll('[data-icon]');
-            for (const icon of icons) {
-                const name = icon.getAttribute('data-icon') || '';
-                if (name && name !== 'plus-bold' && name !== 'Loading' && name !== 'center') {
-                    const btn = icon.closest('button');
-                    if (btn) { btn.click(); return 'clicked_icon_' + name; }
+            const match = results.find((it) => musicEntryMatches(searchTerm, it.title, it.desc));
+            if (!match) {
+                const seen = results.slice(0, 5).map((it) => `"${it.title}" — ${it.desc}`).join(' | ');
+                log(`${label} WARNING: no result matches "${searchTerm}" by title and artist. Skipping rather than favoriting the wrong song. Saw: ${seen}`);
+                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_match_${songIndex + 1}.png`) }).catch(() => null);
+                notFavorited.push(`${searchTerm} (no match)`);
+                continue;
+            }
+
+            log(`${label} Matched result #${match.index + 1}: "${match.title}" — ${match.desc}`);
+
+            // Nút sao chỉ hiện khi chuột thật rê lên, nên phải dùng hover() của
+            // Playwright chứ không phải dispatchEvent bằng JS.
+            const target = (await page.$$('div[role="listitem"][data-item-id]'))[match.index];
+            if (!target) {
+                log(`${label} WARNING: result #${match.index + 1} disappeared before it could be favorited.`);
+                notFavorited.push(`${searchTerm} (result vanished)`);
+                continue;
+            }
+            await target.hover();
+            await page.waitForTimeout(1500);
+
+            // Nút sao nằm trong MusicPanelMusicItem__operation, cạnh nút cộng.
+            const starClicked = await page.evaluate((idx) => {
+                const item = document.querySelectorAll('div[role="listitem"][data-item-id]')[idx];
+                if (!item) return 'no_item';
+
+                const opDiv = item.querySelector('[class*="operation"]');
+                if (!opDiv) return 'no_operation';
+
+                const buttons = opDiv.querySelectorAll('button');
+                for (const btn of buttons) {
+                    // Bỏ qua nút cộng — đó là nút gắn nhạc, không phải nút sao.
+                    if (btn.querySelector('[data-icon="plus-bold"]')) continue;
+                    btn.click();
+                    return 'clicked';
                 }
+
+                const icons = opDiv.querySelectorAll('[data-icon]');
+                for (const icon of icons) {
+                    const name = icon.getAttribute('data-icon') || '';
+                    if (name && name !== 'plus-bold' && name !== 'Loading' && name !== 'center') {
+                        const btn = icon.closest('button');
+                        if (btn) { btn.click(); return 'clicked_icon_' + name; }
+                    }
+                }
+
+                const btnInfo = Array.from(buttons).map(b => ({
+                    text: b.textContent?.trim() || '',
+                    aria: b.getAttribute('aria-label') || '',
+                    icons: Array.from(b.querySelectorAll('[data-icon]')).map(i => i.getAttribute('data-icon'))
+                }));
+                return 'no_star_btn_' + JSON.stringify(btnInfo);
+            }, match.index);
+
+            log(`${label} Star click result: ${starClicked}`);
+
+            if (starClicked.startsWith('clicked')) {
+                favorited++;
+                log(`${label} Favorited "${match.title}" — ${match.desc}`);
+            } else {
+                log(`${label} WARNING: Could not click star for "${searchTerm}" — ${starClicked}`);
+                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_star_${songIndex + 1}.png`) }).catch(() => null);
+                notFavorited.push(`${searchTerm} (star not clickable)`);
             }
 
-            // Last resort: dump what buttons exist
-            const btnInfo = Array.from(buttons).map(b => ({
-                text: b.textContent?.trim() || '',
-                aria: b.getAttribute('aria-label') || '',
-                icons: Array.from(b.querySelectorAll('[data-icon]')).map(i => i.getAttribute('data-icon'))
-            }));
-            return 'no_star_btn_' + JSON.stringify(btnInfo);
-        });
-
-        log(`Star click result: ${starClicked}`);
-
-        if (starClicked.startsWith('clicked')) {
-            log('Clicked star/bookmark on first result — music favorited');
-        } else {
-            log(`WARNING: Could not click star — ${starClicked}`);
-            await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_star.png`) }).catch(() => null);
+            await page.waitForTimeout(2000);
         }
 
-        await page.waitForTimeout(2000);
-
-        log('Favorite music flow completed');
+        log(`Favorite music flow completed: ${favorited}/${searchTerms.length} song(s) favorited`);
+        if (notFavorited.length) {
+            // Nói rõ bài nào trượt: thiếu bài nào trong mục yêu thích là điều
+            // phải biết TRƯỚC khi bật "chọn nhạc từ Favorites", vì nhánh đó lấy
+            // theo vị trí và sẽ lệch nếu danh sách không đủ như mong đợi.
+            log(`NOT favorited (${notFavorited.length}): ${notFavorited.join(' | ')}`);
+        }
     } catch (err) {
         log(`Favorite music error: ${err.message}`);
         throw err;
@@ -3585,10 +3678,15 @@ async function addFavoriteMusic(profile, searchTerm) {
 app.post('/api/add-favorite-music', async (req, res) => {
     const { profileId, searchTerm } = req.body;
     if (!profileId) return res.status(400).json({ error: 'Profile ID is required' });
-    if (!searchTerm || !searchTerm.trim()) return res.status(400).json({ error: 'Search term is required' });
 
     const profile = db.prepare('SELECT * FROM profiles WHERE id = ?').get(profileId);
     if (!profile) return res.status(404).json({ error: 'Profile not found' });
+
+    // Danh sách gửi lên được ưu tiên hơn cột trong DB, vì người dùng có thể vừa
+    // sửa ô nhạc rồi bấm ngay, trước khi lượt lưu tự động kịp hoàn tất.
+    const requested = parseMusicList(searchTerm);
+    const searchTerms = requested.length > 0 ? requested : parseMusicList(profile.music_search);
+    if (searchTerms.length === 0) return res.status(400).json({ error: 'Search term is required' });
 
     if (runningProfiles.has(profileId) || processingProfiles.has(profileId) || queuedProfileIds.has(profileId)) {
         return res.status(400).json({ error: 'Profile is currently running automation or processing a video' });
@@ -3605,7 +3703,7 @@ app.post('/api/add-favorite-music', async (req, res) => {
     res.json({ status: 'started', profile: profile.name });
 
     // Run async — fire and forget
-    addFavoriteMusic(profile, searchTerm.trim()).catch((err) => {
+    addFavoriteMusic(profile, searchTerms).catch((err) => {
         console.error(`[${profile.name}] Add favorite music failed:`, err.message);
     });
 });
@@ -4337,6 +4435,351 @@ const UPLOAD_BUTTON_PROBE_TIMEOUT = 1000;
 // còn một profile thì không — đúng cửa sổ này quyết định sống chết.
 const FILE_CHOOSER_TIMEOUT = 10000;
 
+/**
+ * Ô tiêu đề của video trên trang upload.
+ *
+ * Xếp từ cụ thể tới chung: node chứa chữ thật đứng trước, mấy khung bọc ngoài
+ * để sau, nên khi đọc lại để kiểm tra thì lấy đúng chỗ chứa nội dung.
+ */
+const CAPTION_SELECTOR = [
+    '[data-e2e="caption-edit-container"] [contenteditable="true"]',
+    '.public-DraftEditor-content',
+    '[contenteditable="true"]',
+    '.DraftEditor-root',
+    '[role="textbox"]',
+    'textarea'
+].join(', ');
+
+// Trần cho những khoảng "chờ giao diện ổn định". Đúng bằng 5 giây của mốc ngủ
+// cứng cũ, nên trường hợp xấu nhất không đổi — khác ở chỗ giờ nó là TRẦN chứ
+// không phải thời gian ngủ bắt buộc, nên lượt bình thường đi tiếp ngay.
+const EDITOR_READY_TIMEOUT = 5000;
+
+// Nút Post đã bật là dấu hiệu trình soạn thảo sẵn sàng cho mọi khâu phía sau.
+const POST_BUTTON_READY = 'button[data-e2e="post_video_button"]:not([disabled]), button.common-button-post-video:not([disabled])';
+
+// Chờ ô tiêu đề hiện ra. Mốc cũ là 200ms cho từng selector, và log cho thấy nó
+// hỏng đúng như nút upload từng hỏng: chạy một profile thì trượt 0,1%, nhưng 4
+// profile song song trượt 11% và từ 6 profile trở lên trượt 33% — tổng cộng 996
+// trong 12.387 lượt đăng với tiêu đề còn nguyên. Chờ một lần với hạn thật thay
+// vì dò sáu lần với hạn quá ngắn.
+const CAPTION_WAIT_TIMEOUT = 15000;
+const CAPTION_CLEAR_ATTEMPTS = 2;
+// Số lần ngó lại ô tiêu đề (mỗi lần 500ms) chờ TikTok điền tên file vào.
+const CAPTION_FILL_POLLS = 6;
+
+async function readCaptionText(field) {
+    return field
+        .evaluate((el) => {
+            if (el.value !== undefined) return el.value.trim();
+            // Draft.js vẽ chữ gợi ý ("Writing a long description can help get 3x
+            // more views on average") thành một node riêng nằm CÙNG khung với
+            // nội dung, và nó chỉ hiện khi ô đang trống. Selector gộp bằng dấu
+            // phẩy lại trả về phần tử đứng trước trong DOM, tức khung cha chứa
+            // cả hai — nên đọc thẳng sẽ thấy chữ gợi ý và tưởng là chưa xoá
+            // được, đúng lúc vừa xoá xong. Bỏ node gợi ý ra rồi mới đọc.
+            const clone = el.cloneNode(true);
+            clone.querySelectorAll('[class*="laceholder"]').forEach((node) => node.remove());
+            return (clone.textContent || '').replace(/[\u200B\uFEFF]/g, '').trim();
+        })
+        .catch(() => '');
+}
+
+/**
+ * Xoá tiêu đề mặc định mà TikTok điền sẵn theo tên file.
+ *
+ * Xoá xong thì đọc lại để biết chữ đã biến mất thật chưa — khâu cũ chỉ bấm rồi
+ * ghi "attempt finished" bất kể kết quả, nên một video giữ nguyên tiêu đề trông
+ * y hệt một video đã xoá sạch trong log. Trả về false khi bó tay; chỗ gọi chỉ
+ * cảnh báo chứ không dừng lượt, vì tiêu đề thừa không hỏng bằng nhạc sai.
+ */
+async function clearVideoCaption(page, log, profileName) {
+    const field = await page
+        .waitForSelector(CAPTION_SELECTOR, { timeout: CAPTION_WAIT_TIMEOUT, state: 'visible' })
+        .catch(() => null);
+
+    if (!field) {
+        log(`WARNING: caption field never appeared within ${CAPTION_WAIT_TIMEOUT}ms — TITLE WAS NOT CLEARED.`);
+        await page.screenshot({ path: path.join(__dirname, `debug_${profileName}_no_caption.png`) }).catch(() => null);
+        return false;
+    }
+
+    // TikTok tự điền tiêu đề theo tên file, đôi khi chậm hơn lúc ô hiện ra.
+    // Khoảng ngủ cứng 5 giây trước kia vô tình che chuyện này; bỏ nó rồi thì
+    // phải đợi đúng lúc chữ xuất hiện, không thì ta xoá một ô đang trống và
+    // TikTok điền tên file vào ngay sau đó — tiêu đề vẫn còn nguyên.
+    let before = await readCaptionText(field);
+    for (let i = 0; i < CAPTION_FILL_POLLS && !before; i++) {
+        await page.waitForTimeout(500);
+        before = await readCaptionText(field);
+    }
+
+    if (!before) {
+        log('Caption is already empty — nothing to clear.');
+        return true;
+    }
+    log(`Caption field found. Current text: "${before.slice(0, 80)}"`);
+
+    for (let attempt = 1; attempt <= CAPTION_CLEAR_ATTEMPTS; attempt++) {
+        await field.focus().catch(() => null);
+        await field.click({ clickCount: 3 }).catch(() => null);
+        await page.keyboard.press('Control+A');
+        await page.keyboard.press('Meta+A');
+        await page.keyboard.press('Backspace');
+        await page.waitForTimeout(600);
+
+        const left = await readCaptionText(field);
+        if (!left) {
+            log(`Caption cleared (attempt ${attempt}/${CAPTION_CLEAR_ATTEMPTS}).`);
+            return true;
+        }
+        log(`Caption still holds text after attempt ${attempt}/${CAPTION_CLEAR_ATTEMPTS}: "${left.slice(0, 80)}"`);
+    }
+
+    log('WARNING: caption could NOT be cleared — THE VIDEO WILL KEEP ITS TITLE.');
+    await page.screenshot({ path: path.join(__dirname, `debug_${profileName}_caption_stuck.png`) }).catch(() => null);
+    return false;
+}
+
+/**
+ * Không xác định được bài nhạc phải dùng cho video này.
+ *
+ * Lớp lỗi riêng vì khâu Add Sound nằm trong một `catch` nuốt sạch lỗi để những
+ * trục trặc lặt vặt của trình soạn thảo không giết cả lượt chạy. Chọn sai nhạc
+ * thì khác: video đăng lên rồi không rút lại được, nên riêng lỗi này phải lọt
+ * qua `catch` đó và dừng hẳn lượt chạy của profile.
+ */
+class MusicNotResolvedError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'MusicNotResolvedError';
+    }
+}
+
+// Ô tìm kiếm trong panel Sounds. TikTok đổi placeholder theo ngôn ngữ nên phải
+// dò vài biến thể; trả về null để chỗ gọi tự quyết định ném lỗi hay bỏ qua.
+async function findSoundSearchInput(page, log) {
+    const selectors = [
+        'input[placeholder="Search sounds"]',
+        'input[placeholder*="sound" i]',
+        'input[placeholder*="music" i]',
+    ];
+    for (let attempt = 0; attempt < 30; attempt++) {
+        for (const sel of selectors) {
+            const el = await page.$(sel).catch(() => null);
+            if (el && await el.isVisible().catch(() => false)) {
+                log(`Found search input via: ${sel}`);
+                return el;
+            }
+        }
+        await page.waitForTimeout(1000);
+    }
+    return null;
+}
+
+// Đọc tên bài và phần mô tả của mọi kết quả đang hiện trong panel.
+// Cấu trúc lấy từ DOM thật: tiêu đề nằm ở MusicPanelMusicItem__infoBasicTitle,
+// còn ca sĩ nằm trong MusicPanelMusicItem__infoBasicDesc sau thời lượng, dạng
+// "04:00 · Gilang Galang".
+async function readSoundItems(page) {
+    return page.evaluate(() => {
+        return [...document.querySelectorAll('div[role="listitem"][data-item-id]')].map((node, index) => ({
+            index,
+            itemId: node.getAttribute('data-item-id'),
+            title: (node.querySelector('.MusicPanelMusicItem__infoBasicTitle')?.textContent || '').trim(),
+            desc: (node.querySelector('.MusicPanelMusicItem__infoBasicDesc')?.textContent || '').trim()
+        }));
+    });
+}
+
+/**
+ * Bấm nút cộng của kết quả thứ `index` để gắn nhạc vào video, rồi chỉnh mốc
+ * bắt đầu về -50 như luồng cũ vẫn làm.
+ */
+async function addSoundAtIndex(page, log, index) {
+    const item = (await page.$$('div[role="listitem"][data-item-id]'))[index];
+    if (!item) throw new MusicNotResolvedError(`Sound item #${index + 1} disappeared before it could be added.`);
+
+    const icon = await item.$('[data-icon="plus-bold"]');
+    if (!icon) throw new MusicNotResolvedError(`Sound item #${index + 1} has no add button.`);
+
+    const button = await icon.evaluateHandle((el) => el.closest('button') || el);
+    await button.scrollIntoViewIfNeeded().catch(() => null);
+    await button.click({ force: true });
+    log(`Sound added via item #${index + 1}.`);
+
+    await page.waitForTimeout(800);
+    const propInput = await page.waitForSelector(
+        'input.PropSettingInput__input, input[class*="PropSettingInput"]',
+        { timeout: PROP_INPUT_TIMEOUT, state: 'visible' }
+    ).catch(() => null);
+
+    if (!propInput) {
+        // Trước đây chỗ này im lặng bỏ qua, nên video lấy nhạc từ giây 0 mà
+        // không ai biết. Cửa sổ chờ cũ chỉ 3 giây: đủ khi máy rảnh, hụt khi
+        // nhiều Chromium tranh CPU — đúng kiểu hỏng của khâu caption 200ms.
+        log(`WARNING: PropSettingInput never appeared within ${PROP_INPUT_TIMEOUT}ms — THE -50 OFFSET WAS NOT SET.`);
+        return;
+    }
+
+    // Điền xong thì đọc lại: bấm mà chữ không vào là chuyện có thật khi máy
+    // nghẽn, và một lần điền không kiểm chứng trông y hệt một lần thành công.
+    for (let attempt = 1; attempt <= PROP_INPUT_ATTEMPTS; attempt++) {
+        await propInput.click({ clickCount: 3 }).catch(() => null);
+        await propInput.fill('-50').catch(() => null);
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(400);
+
+        const value = await propInput.inputValue().catch(() => '');
+        if (value.replace(/\s/g, '') === '-50') {
+            log(`Entered -50 into PropSettingInput (attempt ${attempt}/${PROP_INPUT_ATTEMPTS}).`);
+            return;
+        }
+        log(`PropSettingInput still reads "${value}" after attempt ${attempt}/${PROP_INPUT_ATTEMPTS}.`);
+    }
+
+    log('WARNING: could not set the -50 offset — the sound will start from its own beginning.');
+}
+
+/**
+ * Chọn nhạc theo vị trí trong tab Favorites.
+ *
+ * Không tìm kiếm gì: mở tab, đếm số mục đang hiện rồi lấy mục thứ `cursor`
+ * (quay vòng). Trả về số mục để chỗ gọi biết đường đẩy con trỏ.
+ */
+async function addSoundFromFavorites(page, log, cursor) {
+    // Dò theo chữ trên nút thay vì :has-text, vì trong DOM thật đây là
+    // <button role="tab"> chứ không phải <div> — selector cũ nhắm div nên
+    // không bao giờ khớp.
+    const tabs = await page.$$('button[role="tab"], [role="tab"]');
+    let favTab = null;
+    for (const tab of tabs) {
+        const text = ((await tab.textContent().catch(() => '')) || '').trim();
+        if (/^(favorites?|yêu thích|đã lưu|saved)$/i.test(text)) {
+            log(`Found Favorites tab: "${text}"`);
+            favTab = tab;
+            break;
+        }
+    }
+    if (!favTab) {
+        throw new MusicNotResolvedError('Favorites tab not found in the Sounds panel.');
+    }
+
+    await favTab.click();
+    // Trước đây ngủ cứng 3,5 giây rồi mới đếm — mạng chậm thì danh sách chưa
+    // render kịp, đếm ra 0 và làm dừng lượt dù tài khoản có đầy nhạc yêu thích.
+    // Chờ mục thật xuất hiện; hết hạn mà vẫn trống thì mới là tab rỗng thật.
+    await page.waitForSelector('div[role="listitem"][data-item-id]', {
+        timeout: FAVORITES_LOAD_TIMEOUT
+    }).catch(() => log('No favorite item rendered within the load window; treating the tab as empty.'));
+    await page.waitForTimeout(1000);
+
+    const items = await readSoundItems(page);
+    if (items.length === 0) {
+        throw new MusicNotResolvedError('Favorites tab is empty — no sound to pick.');
+    }
+
+    const position = wrapIndex(items.length, cursor);
+    const chosen = items[position];
+    log(`Favorites ${position + 1}/${items.length}: "${chosen.title}" — ${chosen.desc}`);
+    await addSoundAtIndex(page, log, position);
+    return items.length;
+}
+
+/**
+ * Chọn nhạc bằng cách tìm theo tên, rồi ĐỐI CHIẾU trước khi lấy.
+ *
+ * TikTok trả về cả những bài trùng tên của ca sĩ khác — tìm
+ * "Siren's Song - Gilang Galang" thì kết quả thứ ba là bài cùng tên của
+ * Purrple Cat. Nên phải duyệt từ trên xuống và lấy kết quả ĐẦU TIÊN khớp cả
+ * tên bài lẫn tên ca sĩ, thay vì lấy bừa dòng trên cùng. Cùng một bài thường
+ * có nhiều bản cắt dài ngắn khác nhau và đều khớp; bản đứng đầu được chọn.
+ */
+// Số lượt tìm cho mỗi bài. Lượt thứ hai để phân biệt MẠNG CHẬM với BÀI KHÔNG
+// CÓ THẬT — hai thứ trước đây bị gộp làm một và cùng làm dừng lượt chạy. Nó
+// không nới lỏng gì: bài lấy về vẫn phải khớp tên bài và tên ca sĩ.
+// Chờ nút Save của trình soạn thảo. Mất bước này là mất nhạc, nên rộng tay.
+const EDITOR_SAVE_TIMEOUT = 15000;
+
+// Chờ ô chỉnh mốc bắt đầu của nhạc. Mốc cũ 3 giây hụt khi máy gánh nhiều
+// Chromium: hai profile trượt cùng một giây, đúng lúc event loop bị nghẽn.
+const PROP_INPUT_TIMEOUT = 10000;
+const PROP_INPUT_ATTEMPTS = 2;
+
+const SOUND_SEARCH_ATTEMPTS = 2;
+
+// Chờ danh sách nhạc yêu thích render. Rộng rãi vì tab này tải qua mạng.
+const FAVORITES_LOAD_TIMEOUT = 15000;
+
+// Xoá từ khoá đang nằm trong ô tìm kiếm của panel Sounds.
+async function clearSoundSearch(page, searchInput) {
+    const clearBtn = await page.$('[data-icon="x-circle-fill"], svg[data-icon="x-circle-fill"]').catch(() => null);
+    if (clearBtn) {
+        await clearBtn.click().catch(() => null);
+    } else {
+        await searchInput.focus().catch(() => null);
+        await searchInput.click({ clickCount: 3 }).catch(() => null);
+        await page.keyboard.press('Backspace').catch(() => null);
+    }
+    await page.waitForTimeout(1000);
+}
+
+/**
+ * Chọn nhạc bằng cách tìm theo tên, rồi ĐỐI CHIẾU trước khi lấy.
+ *
+ * TikTok trả về cả những bài trùng tên của ca sĩ khác — tìm
+ * "Siren's Song - Gilang Galang" thì kết quả thứ ba là bài cùng tên của
+ * Purrple Cat. Nên phải duyệt từ trên xuống và lấy kết quả ĐẦU TIÊN khớp cả
+ * tên bài lẫn tên ca sĩ, thay vì lấy bừa dòng trên cùng. Cùng một bài thường
+ * có nhiều bản cắt dài ngắn khác nhau và đều khớp; bản đứng đầu được chọn.
+ *
+ * Tìm lại một lượt nữa khi lượt đầu không ra gì hoặc không khớp gì: danh sách
+ * mới render được một phần vì mạng chậm trông y hệt như bài không tồn tại, mà
+ * một cú nghẽn mạng thoáng qua không đáng để mất cả loạt video còn lại.
+ */
+async function addSoundBySearch(page, log, searchInput, searchTerm) {
+    let lastSeen = '(no results at all)';
+
+    for (let attempt = 1; attempt <= SOUND_SEARCH_ATTEMPTS; attempt++) {
+        if (attempt > 1) {
+            log(`Retrying the search for "${searchTerm}" (attempt ${attempt}/${SOUND_SEARCH_ATTEMPTS}) — the previous attempt may have been cut short by a slow network.`);
+            await clearSoundSearch(page, searchInput);
+        }
+
+        await searchInput.focus();
+        await searchInput.click();
+        await page.keyboard.type(searchTerm, { delay: 30 });
+        await page.waitForTimeout(2000);
+        await page.keyboard.press('Enter');
+        log(`Searching for: "${searchTerm}"`);
+        await page.waitForTimeout(1000);
+
+        await page.waitForSelector(
+            'div[role="listitem"][data-item-id], .MusicPanelSearchResultList__empty',
+            { timeout: 30000 }
+        ).catch(() => log('Wait for search results timed out. Reading whatever is on screen...'));
+        await page.waitForTimeout(2000);
+
+        const items = await readSoundItems(page);
+        const match = items.find((item) => musicEntryMatches(searchTerm, item.title, item.desc));
+
+        if (match) {
+            log(`Matched result #${match.index + 1}: "${match.title}" — ${match.desc}`);
+            await addSoundAtIndex(page, log, match.index);
+            return;
+        }
+
+        lastSeen = items.length === 0
+            ? '(no results at all)'
+            : items.slice(0, 5).map((it) => `"${it.title}" — ${it.desc}`).join(' | ');
+        log(`Attempt ${attempt}/${SOUND_SEARCH_ATTEMPTS}: ${items.length} result(s), none matching. Saw: ${lastSeen}`);
+    }
+
+    throw new MusicNotResolvedError(
+        `No result matches "${searchTerm}" by title and artist after ${SOUND_SEARCH_ATTEMPTS} attempts. Saw: ${lastSeen}`
+    );
+}
+
 async function uploadVideo(profile, videoFolder, videos, limitUploads = false, uploadLimitCount = 0, forceUploadAll = false) {
     const userDataDir = path.join(PROFILES_DIR, profile.name);
     let uploadedCount = 0;
@@ -4346,6 +4789,18 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
     // kể cả video đầu của lượt chạy.
     const postDelayMinutes = getPostDelayMinutes();
     const delayedStart = postDelayMinutes > 0;
+
+    // Danh sách nhạc chạy lần lượt: video này lấy bài kế tiếp của video trước,
+    // hết danh sách thì quay về bài đầu. Con trỏ nằm trong DB nên lượt chạy này
+    // nối tiếp lượt trước thay vì lặp lại mấy bài trên cùng mỗi lần chạy.
+    //
+    // Đọc lại từ DB chứ không dùng bản chụp trong `profile`: job có thể nằm
+    // trong hàng đợi khá lâu mới tới lượt, và trong lúc chờ thì danh sách nhạc
+    // hoàn toàn có thể vừa được sửa trong màn Edit.
+    const musicRow = db.prepare('SELECT music_search, music_index, use_favorite_music FROM profiles WHERE id = ?').get(profile.id) || {};
+    const musicList = parseMusicList(musicRow.music_search ?? profile.music_search);
+    let musicCursor = Number(musicRow.music_index) > 0 ? Math.floor(Number(musicRow.music_index)) : 0;
+    if (musicList.length > 0) musicCursor %= musicList.length;
 
     const browserOptions = {
         headless: false,
@@ -4631,27 +5086,20 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             try {
                 log(`Waiting for upload UI components...`);
                 await page.waitForSelector('.video-info-container, textarea, .DraftEditor-root, button:has-text("Edit video"), [data-button-name="sounds"], button:has-text("Post")', { timeout: 60000 });
-                await page.waitForTimeout(5000);
+
+                // Trước đây ngủ cứng 5 giây ngay đây. Log 12.481 lượt cho thấy
+                // selector trên khớp tức thì, nên cả 5 giây là chờ suông (trung
+                // vị 5,01s). Giờ chờ đúng hai thứ mà hai khâu kế tiếp cần — ô
+                // tiêu đề và nút Sounds — với cùng trần 5 giây.
+                await page.waitForSelector(`${CAPTION_SELECTOR}, button[data-button-name="sounds"]`, {
+                    timeout: EDITOR_READY_TIMEOUT,
+                    state: 'visible'
+                }).catch(() => log('Editor controls not visible within the settle window; continuing anyway.'));
 
                 const shouldRemoveTitle = Number(profile.remove_title) === 1;
                 if (shouldRemoveTitle) {
                     log(`Task 1: Clearing title/caption...`);
-                    const captionSelectors = ['textarea', '.DraftEditor-root', '[role="textbox"]', '[contenteditable="true"]', '.public-DraftEditor-content', '[data-e2e="caption-edit-container"]'];
-                    for (const sel of captionSelectors) {
-                        try {
-                            const caption = await page.waitForSelector(sel, { timeout: 200, state: 'visible' }).catch(() => null);
-                            if (caption) {
-                                log(`Found caption field: ${sel}. Clearing text...`);
-                                await caption.focus();
-                                await caption.click({ clickCount: 3 });
-                                await page.keyboard.press('Control+A');
-                                await page.keyboard.press('Meta+A');
-                                await page.keyboard.press('Backspace');
-                                await page.waitForTimeout(500);
-                                log(`Caption clearing attempt finished.`);
-                            }
-                        } catch (e) { }
-                    }
+                    await clearVideoCaption(page, log, profile.name);
                 } else {
                     log(`remove_title tắt: Giữ lại tiêu đề video.`);
                 }
@@ -4704,226 +5152,79 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         // Screenshot before search
                         await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sounds_panel.png`) }).catch(() => null);
 
-                        // Search for music using profile.music_search instead of clicking Favorites tab
-                        const searchTerm = (profile.music_search || '').trim();
-                        if (!searchTerm) {
-                            log('WARNING: profile.music_search is empty. Skipping sound edit.');
+                        // Chọn nhạc cho video này. Hai đường: lấy theo vị trí
+                        // trong tab Favorites, hoặc tìm theo tên bài rồi đối
+                        // chiếu. Cả hai đều DỪNG lượt chạy khi không chắc chắn
+                        // — video đăng nhầm nhạc thì không rút lại được, còn
+                        // lượt chạy dừng thì chạy lại được.
+                        const useFavorites = Number(musicRow.use_favorite_music ?? profile.use_favorite_music) === 1;
+
+                        if (useFavorites) {
+                            const favouriteCount = await addSoundFromFavorites(page, log, musicCursor);
+                            musicCursor = wrapIndex(favouriteCount, musicCursor + 1);
+                            db.prepare('UPDATE profiles SET music_index = ? WHERE id = ?')
+                                .run(musicCursor, profile.id);
                         } else {
-                            log(`Searching for music: "${searchTerm}"`);
-
-                            // Wait for search input to appear in Sounds panel (no hardcoded wait)
-                            const searchInputSelectors = [
-                                'input[placeholder="Search sounds"]',
-                                'input[placeholder*="sound" i]',
-                                'input[placeholder*="music" i]',
-                            ];
-
-                            let searchInput = null;
-                            for (let i = 0; i < 30; i++) {
-                                for (const sel of searchInputSelectors) {
-                                    try {
-                                        const el = await page.$(sel);
-                                        if (el && await el.isVisible()) {
-                                            searchInput = el;
-                                            log(`Found search input via: ${sel}`);
-                                            break;
-                                        }
-                                    } catch (err) {}
-                                }
-                                if (searchInput) break;
-                                await page.waitForTimeout(1000);
+                            const searchTerm = pickMusicAt(musicList, musicCursor);
+                            if (!searchTerm) {
+                                throw new MusicNotResolvedError('Danh sách nhạc trống nhưng set_music đang bật.');
                             }
+                            log(`Music ${musicCursor + 1}/${musicList.length} for video ${i + 1}: "${searchTerm}"`);
 
+                            // Ghi con trỏ ngay khi bốc bài, không đợi hết lượt:
+                            // lượt chạy dừng giữa chừng thì lần sau vẫn đi tiếp
+                            // chứ không phát lại bài cũ.
+                            musicCursor = nextMusicIndex(musicList, musicCursor);
+                            db.prepare('UPDATE profiles SET music_index = ? WHERE id = ?')
+                                .run(musicCursor, profile.id);
+
+                            const searchInput = await findSoundSearchInput(page, log);
                             if (!searchInput) {
-                                log('ERROR: Search input not found in Sounds panel');
                                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_search.png`) }).catch(() => null);
-                            } else {
-                                log('Sounds panel ready. Waiting 4 seconds for UI stability before typing...');
-                                await page.waitForTimeout(4000);
-
-                                // Fill search term and trigger search
-                                log(`Setting search term: "${searchTerm}"`);
-                                await searchInput.focus();
-                                await searchInput.click();
-                                await page.keyboard.type(searchTerm, { delay: 30 });
-                                log('Search term filled, waiting for suggestions...');
-                                await page.waitForTimeout(2000);
-
-                                await page.keyboard.press('Enter');
-                                log('Enter pressed, waiting for new search results to load...');
-
-                                 // Wait a moment for TikTok to switch to loading state
-                                 await page.waitForTimeout(1000);
-
-                                try {
-                                    await page.waitForSelector('div[role="listitem"][data-item-id], .MusicPanelSearchResultList__empty', { timeout: 30000 });
-                                    log('Search results refreshed or empty state detected.');
-                                } catch (e) {
-                                    log('Wait for search results timed out or failed. Proceeding anyway...');
-                                }
-                                await page.waitForTimeout(2000); // Short stabilization wait after refresh
-
-                                await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_search_results.png`) }).catch(() => null);
-
-                                let soundAdded = false;
-                                try {
-                                    const emptyResult = await page.$('.MusicPanelSearchResultList__empty');
-                                    const firstItem = await page.$('div[role="listitem"][data-item-id]');
-
-                                    if (emptyResult || !firstItem) {
-                                        log('WARNING: No search results found (empty list or no first item). Triggering Recent fallback...');
-                                        await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_no_results.png`) }).catch(() => null);
-
-                                        // Click the 'x' icon in search music
-                                        const clearBtn = await page.$('[data-icon="x-circle-fill"], svg[data-icon="x-circle-fill"]');
-                                        if (clearBtn) {
-                                            log('Clicking x icon to clear search...');
-                                            await clearBtn.click();
-                                        } else {
-                                            log('x-circle-fill icon not found, using keyboard selectAll+Backspace...');
-                                            await searchInput.focus();
-                                            await searchInput.click({ clickCount: 3 });
-                                            await page.keyboard.press('Control+A');
-                                            await page.keyboard.press('Backspace');
-                                        }
-                                        await page.waitForTimeout(1500);
-
-                                        // Click Recent tab
-                                        log('Looking for Recent tab...');
-                                        let recentTab = null;
-                                        const recentSelectors = [
-                                            'div[role="tab"]:has-text("Recent")',
-                                            'div[role="tab"]:has-text("Gần đây")',
-                                            'div[role="tab"]:has-text("recent")',
-                                            'div[role="tab"]:has-text("gần đây")',
-                                            'span:has-text("Recent")',
-                                            'span:has-text("Gần đây")',
-                                            'button:has-text("Recent")',
-                                            'button:has-text("Gần đây")',
-                                            'span:has-text("Recents")',
-                                            'button:has-text("Recents")',
-                                        ];
-                                        for (const sel of recentSelectors) {
-                                            try {
-                                                recentTab = await page.waitForSelector(sel, { timeout: 1500, state: 'visible' }).catch(() => null);
-                                                if (recentTab) {
-                                                    log(`Found Recent tab via selector: ${sel}`);
-                                                    break;
-                                                }
-                                            } catch (err) {}
-                                        }
-
-                                        if (recentTab) {
-                                            log('Clicking Recent tab...');
-                                            await recentTab.click();
-                                            await page.waitForTimeout(3000); // Wait for recent list to load
-
-                                            // Click the first record in recent list
-                                            const firstRecentItem = await page.$('div[role="listitem"][data-item-id]');
-                                            if (firstRecentItem) {
-                                                log('Found first recent result. Looking for plus button...');
-                                                const icon = await firstRecentItem.$('[data-icon="plus-bold"]');
-                                                if (icon) {
-                                                    log(`Found plus icon inside recent item. Finding parent button...`);
-                                                    const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
-                                                    await parentButton.scrollIntoViewIfNeeded();
-                                                    await parentButton.click({ force: true });
-                                                    log(`Sound added via Recent tab first result.`);
-                                                    soundAdded = true;
-
-                                                    // Enter -50 in the PropSettingInput
-                                                    log(`Waiting for PropSettingInput to appear...`);
-                                                    await page.waitForTimeout(800);
-                                                    const propInput = await page.waitForSelector(
-                                                        'input.PropSettingInput__input, input[class*="PropSettingInput"]',
-                                                        { timeout: 3000, state: 'visible' }
-                                                    ).catch(() => null);
-                                                    if (propInput) {
-                                                        log(`Found PropSettingInput. Entering -50...`);
-                                                        await propInput.click({ clickCount: 3 });
-                                                        await propInput.fill('-50');
-                                                        await page.keyboard.press('Enter');
-                                                        log(`Entered -50 into PropSettingInput.`);
-                                                    }
-                                                } else {
-                                                    log('Plus button not found in first favorites result.');
-                                                }
-                                            } else {
-                                                log('WARNING: No items found in Favorites tab.');
-                                            }
-                                        } else {
-                                            log('ERROR: Favorites tab not found.');
-                                        }
-                                    } else {
-                                        log('Found first search result. Looking for plus button...');
-                                        const icon = await firstItem.$('[data-icon="plus-bold"]');
-                                        if (icon) {
-                                            log(`Found plus icon inside music item. Finding parent button...`);
-                                            const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
-                                            await parentButton.scrollIntoViewIfNeeded();
-                                            await parentButton.click({ force: true });
-                                            log(`Sound added via search result plus button.`);
-                                            soundAdded = true;
-
-                                            // After sound is added, enter -50 in the PropSettingInput
-                                            log(`Waiting for PropSettingInput to appear...`);
-                                            await page.waitForTimeout(800);
-                                            const propInput = await page.waitForSelector(
-                                                'input.PropSettingInput__input, input[class*="PropSettingInput"]',
-                                                { timeout: 3000, state: 'visible' }
-                                            ).catch(() => null);
-                                            if (propInput) {
-                                                log(`Found PropSettingInput. Entering -50...`);
-                                                await propInput.click({ clickCount: 3 });
-                                                await propInput.fill('-50');
-                                                await page.keyboard.press('Enter');
-                                                log(`Entered -50 into PropSettingInput.`);
-                                            } else {
-                                                log(`PropSettingInput not found. Skipping.`);
-                                            }
-                                        } else {
-                                            log('Plus button not found in first search result.');
-                                        }
-                                    }
-
-                                    // Fallback: If sequence failed, try to find ANY visible plus-bold icon that is NOT in the sidebar
-                                    if (!soundAdded) {
-                                        log(`Item-specific search failed. Trying filtered plus icons...`);
-                                        const allIcons = await page.$$('[data-icon="plus-bold"]');
-                                        for (const icon of allIcons) {
-                                            const inSidebar = await icon.evaluate(el => el.closest('[class*="Sidebar"]') || el.closest('[class*="sidebar"]'));
-                                            if (!inSidebar && await icon.isVisible()) {
-                                                const parentButton = await icon.evaluateHandle(el => el.closest('button') || el);
-                                                await parentButton.scrollIntoViewIfNeeded();
-                                                await parentButton.click({ force: true });
-                                                log(`Sound added via filtered icon.`);
-                                                soundAdded = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } catch (e) {
-                                    log(`Error in plus button selection: ${e.message}`);
-                                }
+                                throw new MusicNotResolvedError('Search input not found in the Sounds panel.');
                             }
+
+                            log('Sounds panel ready. Waiting 4 seconds for UI stability before typing...');
+                            await page.waitForTimeout(4000);
+                            await addSoundBySearch(page, log, searchInput, searchTerm);
                         }
 
                         await page.waitForTimeout(1000);
 
-                        const saveBtn = 'button:has-text("Save"), .save-btn, button.jsx-2503522271.save-btn';
-                        const sBtn = await page.waitForSelector(saveBtn, { timeout: 5000, state: 'visible' }).catch(() => null);
-                        if (sBtn) {
-                            await sBtn.click();
-                            log(`Changes saved in editor.`);
-                            await page.waitForSelector('button:has-text("Post")', { timeout: 10000, state: 'visible' });
-                            await page.waitForTimeout(1000);
+                        // Không bấm được Save thì nhạc vừa chọn không dính vào video,
+                        // và video vẫn đăng — tức mất đúng thứ mà cả lượt chạy sinh ra
+                        // để làm. Trước đây chỗ này bỏ qua im lặng với hạn 5 giây, và
+                        // đã trượt thật khi máy nghẽn. Nới hạn cho lúc máy gánh nặng,
+                        // rồi hỏng thì dừng lượt như mọi lỗi nhạc khác.
+                        // Kèm cả chữ tiếng Việt: nút này giờ là điều kiện dừng lượt, nên
+                        // một giao diện đổi ngôn ngữ sẽ làm chết đồng loạt mọi profile chứ
+                        // không còn âm thầm đăng thiếu nhạc như trước. Class .save-btn là
+                        // chỗ dựa chính, nhưng jsx-2503522271 là mã băm TikTok sinh lúc
+                        // build và sẽ đổi khi họ deploy bản mới — đừng trông vào nó.
+                        const saveBtn = 'button:has-text("Save"), button:has-text("Lưu"), .save-btn, button.jsx-2503522271.save-btn';
+                        const sBtn = await page.waitForSelector(saveBtn, { timeout: EDITOR_SAVE_TIMEOUT, state: 'visible' }).catch(() => null);
+                        if (!sBtn) {
+                            throw new MusicNotResolvedError(`Save button never appeared within ${EDITOR_SAVE_TIMEOUT}ms, so the chosen sound would not be applied.`);
                         }
+                        await sBtn.click();
+                        log(`Changes saved in editor.`);
+                        await page.waitForSelector('button:has-text("Post")', { timeout: 15000, state: 'visible' })
+                            .catch(() => log('Post button did not reappear after saving; continuing.'));
+                        await page.waitForTimeout(1000);
                     } else {
-                        log(`Editor/Sounds button not found. Skipping editor steps.`);
+                        // set_music bật mà không mở nổi panel Sounds nghĩa là
+                        // video sẽ đăng không nhạc. Im lặng bỏ qua ở đây là để
+                        // lọt đúng thứ mà cả khâu này sinh ra để tránh.
+                        throw new MusicNotResolvedError('Sounds button never became available, so no sound could be set.');
                     }
                 } catch (e) {
                     log(`Add sound task failed: ${e.message}`);
                     await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_sound_fail.png`) }).catch(() => null);
+                    // Trục trặc lặt vặt của trình soạn thảo thì nuốt như cũ, để
+                    // một lỗi vặt không giết cả lượt chạy. Nhưng khi không xác
+                    // định được bài nhạc thì phải ném tiếp: đăng nhầm nhạc là
+                    // hỏng vĩnh viễn, còn dừng lượt thì chạy lại được.
+                    if (e instanceof MusicNotResolvedError) throw e;
                 }
             } else {
                 log(`set_music tắt: bỏ qua Edit video và chọn nhạc.`);
@@ -4935,8 +5236,18 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 log("Waiting for video upload to complete...");
                 const cancelBtn = page.locator('button:has-text("Cancel")');
                 await cancelBtn.waitFor({ state: 'detached', timeout: 20 * 60 * 1000 });
-                log("Upload complete (Cancel button is gone). Waiting 5s for UI to settle...");
-                await page.waitForTimeout(5000);
+                // Nút Cancel hầu như luôn biến mất từ trước — vòng đợi upload phía
+                // trên đã chờ tới lúc nút Post bật. Log 12.468 lượt: trung vị 0,00s
+                // và 98% dưới nửa giây, nên 5 giây kế tiếp trước đây là ngủ thuần.
+                // Chờ đúng thứ mọi khâu sau cần, cùng trần 5 giây.
+                log("Upload complete (Cancel button is gone). Waiting for the Post button to become ready...");
+                const postReady = await page.waitForSelector(POST_BUTTON_READY, {
+                    timeout: EDITOR_READY_TIMEOUT,
+                    state: 'visible'
+                }).catch(() => null);
+                log(postReady
+                    ? 'Post button is ready.'
+                    : 'Post button not ready within the settle window; continuing anyway.');
             } catch (uploadErr) {
                 log(`Warning/Error waiting for upload completion: ${uploadErr.message}`);
             }
@@ -4948,7 +5259,10 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     log(`Starting Content check lite validation...`);
                     // Wait for toggle/switch container to be attached
                     const headline = page.locator('.headline-wrapper', { hasText: 'Content check lite' });
-                    await headline.waitFor({ timeout: 5000 }).catch(() => null);
+                    // 10 giây chứ không phải 5: trước đây khâu này còn được hưởng thêm 5 giây
+                    // ngủ cứng ngay phía trên, và bỏ giấc ngủ đó đi thì dung sai cho mạng
+                    // chậm cũng mất theo. Cộng lại cho bằng mức cũ.
+                    await headline.waitFor({ timeout: 10000 }).catch(() => null);
 
                     if (await headline.count() > 0) {
                         const switchContent = headline.locator('.Switch__content');
