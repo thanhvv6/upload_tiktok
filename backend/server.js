@@ -3726,6 +3726,37 @@ function listProfileVideos(profile) {
     }
 }
 
+// Video đăng xong được chuyển vào kho lưu thay vì xoá hẳn. Kho nằm ngay trong
+// thư mục video của profile và chia tiếp theo từng ngày, nên nhìn vào là biết
+// hôm nào đã đăng những bài nào. Cả listProfileVideos lẫn getFolderVideoStatus
+// đều readdirSync không đệ quy, nên thư mục con này không bao giờ bị đếm ngược
+// trở lại thành video chờ đăng.
+const ARCHIVE_DIR_NAME = 'old_videos';
+
+function archiveFolderForToday(videoFolder) {
+    const now = new Date();
+    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return path.join(videoFolder, ARCHIVE_DIR_NAME, day);
+}
+
+// Trả về đường dẫn file trong kho, hoặc ném lỗi cho phía gọi ghi log. Trùng tên
+// thì thêm hậu tố chứ không đè: file đang nằm trong kho cũng là video thật đã
+// đăng, đè lên là mất hẳn.
+function archiveUploadedVideo(videoPath, videoFolder) {
+    const destDir = archiveFolderForToday(videoFolder);
+    fs.mkdirSync(destDir, { recursive: true });
+
+    const ext = path.extname(videoPath);
+    const base = path.basename(videoPath, ext);
+    let dest = path.join(destDir, `${base}${ext}`);
+    for (let n = 2; fs.existsSync(dest); n++) {
+        dest = path.join(destDir, `${base}_${n}${ext}`);
+    }
+
+    fs.renameSync(videoPath, dest);
+    return dest;
+}
+
 // Một hàng đợi đăng duy nhất cho MỌI đường vào: nút chạy hàng loạt lẫn nút START
 // trên từng card. Trước đây mỗi lần bấm dựng một hàng đợi riêng với biến đếm
 // riêng, nên bấm START vài card liên tiếp là mở vượt maxConcurrency trình duyệt
@@ -5657,14 +5688,22 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     }
                 }
 
+                // Đếm trước khi dọn file: bài đã lên TikTok rồi, kho lưu hỏng
+                // cũng không làm nó chưa được đăng. Trước đây uploadedCount nằm
+                // sau bước xoá nên một lỗi file lẻ là lượt chạy đăng lố quá số
+                // video đã giới hạn.
+                uploadedCount++;
+
                 try {
                     if (fs.existsSync(videoPath)) {
-                        fs.unlinkSync(videoPath);
-                        log(`SUCCESS: Deleted ${videoFileName} after upload.`);
+                        const archivedPath = archiveUploadedVideo(videoPath, videoFolder);
+                        log(`SUCCESS: Moved ${videoFileName} to ${archivedPath} after upload.`);
                     }
-                    uploadedCount++;
                 } catch (err) {
-                    log(`ERROR deleting file: ${err.message}`);
+                    // Không xoá bù khi chuyển hỏng: mất video nặng hơn đăng
+                    // trùng. Nhưng phải nói rõ file còn nằm nguyên chỗ cũ, vì
+                    // lượt chạy sau sẽ nhặt lại đúng nó.
+                    log(`ERROR archiving file: ${err.message}. ${videoFileName} vẫn nằm trong ${videoFolder} và sẽ được đăng lại ở lượt sau.`);
                 }
 
                 try {
