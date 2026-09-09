@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { chromium } from 'playwright';
@@ -3726,24 +3727,34 @@ function listProfileVideos(profile) {
     }
 }
 
-// Video đăng xong được chuyển vào kho lưu thay vì xoá hẳn. Kho nằm ngay trong
-// thư mục video của profile và chia tiếp theo từng ngày, nên nhìn vào là biết
-// hôm nào đã đăng những bài nào. Cả listProfileVideos lẫn getFolderVideoStatus
-// đều readdirSync không đệ quy, nên thư mục con này không bao giờ bị đếm ngược
-// trở lại thành video chờ đăng.
-const ARCHIVE_DIR_NAME = 'old_videos';
+// Video đăng xong được chuyển vào kho lưu thay vì xoá hẳn. Kho nằm NGOÀI thư
+// mục video, gom theo kênh rồi tới ngày: old_videos/<kênh>/<ngày>/<file>. Mở
+// thư mục một kênh là thấy hôm nào kênh đó đã đăng những bài nào, và vì kho
+// không nằm trong thư mục video nên lượt chạy sau không bao giờ nhặt lại chúng.
+//
+// Chỗ đặt kho là TẠM THỜI theo yêu cầu: hiện gửi sang dự án tiktok_receiver.
+// Đổi chỗ mà không phải sửa code thì ghi khoá `archiveFolder` qua
+// POST /api/config; giá trị dưới đây chỉ là mặc định khi khoá đó chưa có.
+const DEFAULT_ARCHIVE_DIR = path.join(os.homedir(), 'tiktok_receiver', 'old_videos');
 
-function archiveFolderForToday(videoFolder) {
-    const now = new Date();
-    const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    return path.join(videoFolder, ARCHIVE_DIR_NAME, day);
+// Tên kênh đi thẳng vào đường dẫn nên phải chặn ký tự tách thư mục: một profile
+// đặt tên có dấu "/" sẽ khiến file rơi ra ngoài kho thay vì tạo thư mục con.
+function safeFolderName(name) {
+    const cleaned = String(name || '').replace(/[/\\]/g, '_').trim();
+    return cleaned === '' || cleaned === '.' || cleaned === '..' ? 'unknown' : cleaned;
+}
+
+function archiveFolderForProfile(profileName, when = new Date()) {
+    const root = getConfig('archiveFolder', DEFAULT_ARCHIVE_DIR);
+    const day = `${when.getFullYear()}-${String(when.getMonth() + 1).padStart(2, '0')}-${String(when.getDate()).padStart(2, '0')}`;
+    return path.join(root, safeFolderName(profileName), day);
 }
 
 // Trả về đường dẫn file trong kho, hoặc ném lỗi cho phía gọi ghi log. Trùng tên
 // thì thêm hậu tố chứ không đè: file đang nằm trong kho cũng là video thật đã
 // đăng, đè lên là mất hẳn.
-function archiveUploadedVideo(videoPath, videoFolder) {
-    const destDir = archiveFolderForToday(videoFolder);
+function archiveUploadedVideo(videoPath, profileName) {
+    const destDir = archiveFolderForProfile(profileName);
     fs.mkdirSync(destDir, { recursive: true });
 
     const ext = path.extname(videoPath);
@@ -3753,7 +3764,16 @@ function archiveUploadedVideo(videoPath, videoFolder) {
         dest = path.join(destDir, `${base}_${n}${ext}`);
     }
 
-    fs.renameSync(videoPath, dest);
+    try {
+        fs.renameSync(videoPath, dest);
+    } catch (err) {
+        // Kho giờ nằm ngoài thư mục video nên hai bên hoàn toàn có thể khác ổ
+        // đĩa, mà rename(2) không qua được ranh giới ổ; chép rồi xoá là đường
+        // duy nhất còn lại.
+        if (err.code !== 'EXDEV') throw err;
+        fs.copyFileSync(videoPath, dest);
+        fs.unlinkSync(videoPath);
+    }
     return dest;
 }
 
@@ -5696,7 +5716,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                 try {
                     if (fs.existsSync(videoPath)) {
-                        const archivedPath = archiveUploadedVideo(videoPath, videoFolder);
+                        const archivedPath = archiveUploadedVideo(videoPath, profile.name);
                         log(`SUCCESS: Moved ${videoFileName} to ${archivedPath} after upload.`);
                     }
                 } catch (err) {
