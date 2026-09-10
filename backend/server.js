@@ -4763,6 +4763,22 @@ const PROP_INPUT_ATTEMPTS = 2;
 
 const SOUND_SEARCH_ATTEMPTS = 2;
 
+// Số lần làm lại MỘT video trước khi bỏ qua nó.
+//
+// Lượt chạy để cả đêm không ai trông, nên một trục trặc thoáng qua ở video 1
+// mà giết cả lượt là mất trắng tám video còn lại. Ảnh chụp lúc trượt ngày
+// 2026-09-10 cho thấy TikTok đang ở màn "Loading..." — cả trang tải lại, trình
+// soạn thảo biến mất, nên poll thêm cũng vô ích; thứ có tác dụng là vào lại từ
+// đầu. Làm lại an toàn vì chưa có gì được đăng: file chỉ rời thư mục sau khi
+// Post đã xác nhận.
+const VIDEO_ATTEMPTS = 3;
+
+// Bao nhiêu video hỏng LIÊN TIẾP thì coi là hỏng hệ thống mà dừng hẳn.
+//
+// Làm lại chỉ chữa được trục trặc lẻ. Mất đăng nhập hay bị chặn thì video nào
+// cũng hỏng, và cắm đầu thử lại cả trăm lượt chỉ tổ đốt thời gian trong đêm.
+const MAX_CONSECUTIVE_VIDEO_FAILURES = 3;
+
 // Chờ danh sách nhạc yêu thích render. Rộng rãi vì tab này tải qua mạng.
 const FAVORITES_LOAD_TIMEOUT = 15000;
 
@@ -4933,6 +4949,10 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         }
         // --- Hết phần đọc lịch cũ ---
 
+        // Đếm số lần đã thử cho từng video, và số video hỏng liên tiếp.
+        const videoAttempts = new Map();
+        let consecutiveVideoFailures = 0;
+
         for (let i = 0; i < videos.length; i++) {
             if (uploadedCount >= maxUploads) {
                 log(`Reached target upload count: ${uploadedCount}. Stopping.`);
@@ -4945,6 +4965,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             // lastScheduledTime — biến đó là neo cho video kế tiếp, và vẫn giữ
             // giá trị ngay cả khi khâu điền lịch của vòng này hỏng.
             let scheduledThisVideo = null;
+
+            // ─── BẮT ĐẦU phần thân làm-lại-được của một video ──────────────
+            // Thân giữ nguyên thụt lề cũ để bản vá này đọc được bằng mắt: bọc
+            // gần 900 dòng vào một tầng nữa thì diff phình lên và che mất chỗ
+            // thật sự đổi. Chỗ đóng nằm ở cuối vòng lặp, có ghi chú tương ứng.
+            try {
 
             log(`Processing video ${i + 1}/${videos.length}: ${videoFileName}`);
 
@@ -5782,6 +5808,10 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 // sau bước xoá nên một lỗi file lẻ là lượt chạy đăng lố quá số
                 // video đã giới hạn.
                 uploadedCount++;
+                // Một video lên được nghĩa là kênh vẫn khoẻ: chuỗi hỏng liên
+                // tiếp tính lại từ đầu, để vài cú xui rải rác không cộng dồn
+                // thành cớ dừng cả lượt.
+                consecutiveVideoFailures = 0;
 
                 try {
                     if (fs.existsSync(videoPath)) {
@@ -5812,6 +5842,37 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 if (i < videos.length - 1) {
                     log(`Preparing for next video...`);
                     await page.waitForTimeout(5000);
+                }
+            }
+            // ─── KẾT THÚC phần thân làm-lại-được của một video ─────────────
+            } catch (videoErr) {
+                // Browser chết thì làm lại cũng vô nghĩa — không còn trang nào.
+                if (isBrowserGone(videoErr)) throw videoErr;
+
+                const tried = (videoAttempts.get(i) ?? 0) + 1;
+                videoAttempts.set(i, tried);
+                log(`Video ${i + 1}/${videos.length} failed (attempt ${tried}/${VIDEO_ATTEMPTS}): ${videoErr.message}`);
+
+                if (tried < VIDEO_ATTEMPTS) {
+                    // Chưa có gì được đăng nên vào lại từ đầu là an toàn: vòng
+                    // sau tự điều hướng lại trang upload và chọn lại file.
+                    log(`Retrying video ${i + 1} from the top of the upload flow.`);
+                    await page.waitForTimeout(5000);
+                    i--;
+                    continue;
+                }
+
+                consecutiveVideoFailures++;
+                log(`WARNING: giving up on video ${i + 1} (${videoFileName}) after ${tried} attempts. ` +
+                    `The file stays in ${videoFolder} for a later run. ` +
+                    `${consecutiveVideoFailures}/${MAX_CONSECUTIVE_VIDEO_FAILURES} videos have failed in a row.`);
+
+                if (consecutiveVideoFailures >= MAX_CONSECUTIVE_VIDEO_FAILURES) {
+                    // Hỏng liên tiếp là dấu hiệu hỏng hệ thống — mất đăng nhập,
+                    // bị chặn — chứ không phải xui. Dừng để khỏi đốt cả đêm.
+                    throw new Error(
+                        `${consecutiveVideoFailures} video liên tiếp không đăng được, lần cuối: ${videoErr.message}`
+                    );
                 }
             }
         }
