@@ -4952,6 +4952,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
         // Đếm số lần đã thử cho từng video, và số video hỏng liên tiếp.
         const videoAttempts = new Map();
         let consecutiveVideoFailures = 0;
+        let abandonedVideos = 0;
 
         for (let i = 0; i < videos.length; i++) {
             if (uploadedCount >= maxUploads) {
@@ -4965,6 +4966,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             // lastScheduledTime — biến đó là neo cho video kế tiếp, và vẫn giữ
             // giá trị ngay cả khi khâu điền lịch của vòng này hỏng.
             let scheduledThisVideo = null;
+            // TikTok đã nhận bài của vòng này chưa. Chốt chặn cho việc thử lại:
+            // đăng rồi mà làm lại là đăng trùng, mà đăng trùng thì không rút
+            // lại được. Cửa sổ nguy hiểm tuy hẹp — sau khi Post đã xác nhận thì
+            // chỉ còn đúng một lệnh await chưa được bọc catch riêng — nhưng cái
+            // giá của nó đủ lớn để chặn hẳn thay vì tin là không xảy ra.
+            let postedThisVideo = false;
 
             // ─── BẮT ĐẦU phần thân làm-lại-được của một video ──────────────
             // Thân giữ nguyên thụt lề cũ để bản vá này đọc được bằng mắt: bọc
@@ -5808,6 +5815,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 // sau bước xoá nên một lỗi file lẻ là lượt chạy đăng lố quá số
                 // video đã giới hạn.
                 uploadedCount++;
+                postedThisVideo = true;
                 // Một video lên được nghĩa là kênh vẫn khoẻ: chuỗi hỏng liên
                 // tiếp tính lại từ đầu, để vài cú xui rải rác không cộng dồn
                 // thành cớ dừng cả lượt.
@@ -5849,6 +5857,14 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 // Browser chết thì làm lại cũng vô nghĩa — không còn trang nào.
                 if (isBrowserGone(videoErr)) throw videoErr;
 
+                // TikTok đã nhận bài rồi thì tuyệt đối không làm lại: video đã
+                // nằm trên kênh, chạy lại vòng này là đăng thêm một bản nữa.
+                // Ném tiếp để lượt dừng và người dùng tự xem lại.
+                if (postedThisVideo) {
+                    log(`Video ${i + 1} đã đăng xong rồi mới hỏng (${videoErr.message}) — KHÔNG làm lại để tránh đăng trùng.`);
+                    throw videoErr;
+                }
+
                 const tried = (videoAttempts.get(i) ?? 0) + 1;
                 videoAttempts.set(i, tried);
                 log(`Video ${i + 1}/${videos.length} failed (attempt ${tried}/${VIDEO_ATTEMPTS}): ${videoErr.message}`);
@@ -5857,11 +5873,12 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     // Chưa có gì được đăng nên vào lại từ đầu là an toàn: vòng
                     // sau tự điều hướng lại trang upload và chọn lại file.
                     log(`Retrying video ${i + 1} from the top of the upload flow.`);
-                    await page.waitForTimeout(5000);
+                    await page.waitForTimeout(5000).catch(() => null);
                     i--;
                     continue;
                 }
 
+                abandonedVideos++;
                 consecutiveVideoFailures++;
                 log(`WARNING: giving up on video ${i + 1} (${videoFileName}) after ${tried} attempts. ` +
                     `The file stays in ${videoFolder} for a later run. ` +
@@ -5876,6 +5893,18 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 }
             }
         }
+
+        // Bỏ qua video hỏng để những video khác vẫn lên được là đúng, nhưng
+        // lượt chạy KHÔNG ĐĂNG ĐƯỢC GÌ mà vẫn kết thúc êm thì chỗ gọi đọc
+        // uploadedCount === 0 và gán trạng thái 'no_videos' — card hiện "hết
+        // video" trong khi thư mục còn nguyên. Đó là báo sai, và đúng kiểu im
+        // lặng mà cả loạt vá này sinh ra để dẹp.
+        if (uploadedCount === 0 && abandonedVideos > 0) {
+            throw new Error(
+                `Không đăng được video nào: ${abandonedVideos} video đều hỏng sau ${VIDEO_ATTEMPTS} lần thử.`
+            );
+        }
+
         return uploadedCount;
     } catch (error) {
         fs.appendFileSync(path.join(__dirname, 'automation.log'), `[${new Date().toISOString()}] CRITICAL ERROR: ${error.message}\n${error.stack}\n`);
