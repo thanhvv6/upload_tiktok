@@ -71,12 +71,20 @@ export function nextMusicIndex(list, index) {
  * cùng rút về những từ như nhau. Dùng \p{L}\p{N} chứ không phải a-z0-9 để tên
  * tiếng Việt có dấu không bị băm vụn.
  *
+ * NFKC chạy trước, vì cùng một cái tên có thể tới đây ở hai dạng Unicode khác
+ * nhau mà mắt thường không phân biệt được. Dấu thanh và dấu đục tách rời (dạng
+ * NFD — thứ macOS dùng cho tên file, nên dán tên bài từ Finder ra là dính) là
+ * \p{Mn} chứ không phải \p{L}, nên nếu không gộp lại trước thì chúng biến thành
+ * khoảng trắng và cắt đôi từ: `ばら色の朝` thành `は ら色の朝`, `Yêu` thành
+ * `y u`. NFKC cũng kéo chữ Latin toàn rộng `Ｓａｔｏ` và katakana nửa rộng
+ * `ﾊﾞﾗ` về dạng thường, để hai vế viết bằng hai kiểu vẫn gặp nhau.
+ *
  * Phải áp dụng cho CẢ HAI vế của phép so sánh, nếu không thì dấu nháy, dấu gạch
  * hay dấu chấm giữa sẽ tạo ra khác biệt giả.
  */
 export function normalizeMusicText(text) {
     if (typeof text !== 'string') return '';
-    return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    return text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
 /**

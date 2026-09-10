@@ -178,6 +178,30 @@ test('normalizeMusicText keeps Vietnamese letters intact', () => {
     assert.equal(normalizeMusicText('Yêu Thích — Mùa Hạ'), 'yêu thích mùa hạ');
 });
 
+test('normalizeMusicText joins a name whose marks arrive separated', () => {
+    // Cùng một cái tên, hai dạng Unicode: dạng gộp và dạng tách rời (NFD, thứ
+    // macOS dùng cho tên file). Dấu tách rời là \p{Mn}, nên trước khi có NFKC
+    // nó bị biến thành khoảng trắng và cắt đôi từ.
+    assert.equal(normalizeMusicText('ばら色の朝'.normalize('NFD')), 'ばら色の朝');
+    assert.equal(
+        normalizeMusicText('ばら色の朝'.normalize('NFD')),
+        normalizeMusicText('ばら色の朝'.normalize('NFC'))
+    );
+    assert.equal(normalizeMusicText('Yêu Thích'.normalize('NFD')), 'yêu thích');
+});
+
+test('normalizeMusicText folds full-width and half-width spellings together', () => {
+    assert.equal(normalizeMusicText('Ｓａｔｏ Ｈａｒｕｋｉ'), 'sato haruki');
+    assert.equal(normalizeMusicText('ﾊﾞﾗ色の朝'), normalizeMusicText('バラ色の朝'));
+});
+
+test('normalizeMusicText keeps a Japanese title whole, since it has no spaces', () => {
+    // Không có dấu cách nên cả tên bài là MỘT từ — lệch một chữ là khác hẳn,
+    // đúng thứ giữ cho 古道の足音 không bị nhận nhầm thành 里道の足音.
+    assert.equal(normalizeMusicText('里道の足音 - Sato Haruki'), '里道の足音 sato haruki');
+    assert.equal(normalizeMusicText('波光る浜辺'), '波光る浜辺');
+});
+
 test('normalizeMusicText survives non-string input', () => {
     for (const value of [null, undefined, 42, {}]) {
         assert.equal(normalizeMusicText(value), '', `failed for ${String(value)}`);
@@ -242,4 +266,59 @@ test('musicEntryMatches refuses an empty entry rather than matching everything',
 
 test('musicEntryMatches handles a result whose fields are missing', () => {
     assert.equal(musicEntryMatches('some song', null, undefined), false);
+});
+
+// --- Tên bài tiếng Nhật: kết quả thật quét từ panel Sounds ---
+//
+// Bảy bài của Sato Haruki được tìm thử trên profile user373253976869; những
+// dòng dưới đây chép nguyên văn tiêu đề và mô tả TikTok trả về. Đáng chú ý:
+// TikTok ghi tên ca sĩ bằng romaji chứ không phải chữ Nhật, nên tên ca sĩ khai
+// theo romaji là khớp; và có một bài TRÙNG TÊN 山霧の朝 của ca sĩ khác — đúng
+// cái bẫy mà phép đối chiếu sinh ra để tránh.
+
+const REAL_JAPANESE_RESULTS = [
+    { title: '里道の足音', desc: '00:29 · Sato Haruki' },
+    { title: '春光の町', desc: '00:27 · Sato Haruki' },
+    { title: '山川のふるさと', desc: '00:35 · Sato Haruki' },
+    { title: '古里の青空', desc: '00:28 · Sato Haruki' },
+    { title: '山霧の朝', desc: '00:28 · Sato Haruki' },
+    { title: '波光る浜辺', desc: '00:27 · Sato Haruki' },
+    { title: '夕霞の村', desc: '00:43 · Sato Haruki' }
+];
+
+test('musicEntryMatches finds each Japanese title among the real results', () => {
+    for (const song of REAL_JAPANESE_RESULTS) {
+        const entry = `${song.title} - Sato Haruki`;
+        const hit = REAL_JAPANESE_RESULTS.find((r) => musicEntryMatches(entry, r.title, r.desc));
+        assert.deepEqual(hit, song, `sai bài cho "${entry}"`);
+    }
+});
+
+test('musicEntryMatches rejects the same Japanese title by a different artist', () => {
+    // Tìm 山霧の朝 trả về cả bài của 7n7e đứng ngay sau bài của Sato Haruki.
+    assert.equal(musicEntryMatches('山霧の朝 - Sato Haruki', '山霧の朝', '01:00 · 7n7e'), false);
+});
+
+test('musicEntryMatches rejects a Japanese title that differs by one character', () => {
+    // 古道の足音 và 里道の足音 khác đúng một chữ kanji; cả hai cùng ra trong một
+    // lần tìm, nên nhận nhầm là đăng sai nhạc.
+    assert.equal(
+        musicEntryMatches('里道の足音 - Sato Haruki', '古道の足音 ・ Footsteps on the Old Road', '01:00 · Lo-Fi 1992'),
+        false
+    );
+});
+
+test('musicEntryMatches still matches a Japanese entry written without the dash', () => {
+    // Dấu gạch chỉ là ký tự phân tách trong mắt phép chuẩn hoá, không phải cú pháp.
+    for (const entry of ['里道の足音 - Sato Haruki', '里道の足音 Sato Haruki', '里道の足音・Sato Haruki']) {
+        assert.equal(musicEntryMatches(entry, '里道の足音', '00:29 · Sato Haruki'), true, `failed for ${entry}`);
+    }
+});
+
+test('musicEntryMatches survives a Japanese entry pasted in the decomposed form', () => {
+    // Anh dán tên bài từ Finder ra thì chuỗi ở dạng NFD, còn TikTok trả về dạng
+    // gộp — trước khi có NFKC thì hai bên không bao giờ gặp nhau và cả lượt chạy
+    // dừng lại mà không rõ vì sao.
+    const entry = 'ばら色の朝 - Sato Haruki'.normalize('NFD');
+    assert.equal(musicEntryMatches(entry, 'ばら色の朝', '00:30 · Sato Haruki'), true);
 });
