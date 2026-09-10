@@ -48,6 +48,7 @@ import {
     wrapIndex,
     musicEntryMatches
 } from './music-list.js';
+import { isBrowserGone, ScheduleNotSetError } from './run-errors.js';
 import { getFolderVideoStatus } from './video-folder-status.js';
 import {
   createJob, getJob, addClient, removeClient,
@@ -4607,6 +4608,9 @@ class MusicNotResolvedError extends Error {
     }
 }
 
+// isBrowserGone và ScheduleNotSetError nằm ở ./run-errors.js — xem chỗ đó cho
+// lý do và các trường hợp đã có test.
+
 // Ô tìm kiếm trong panel Sounds. TikTok đổi placeholder theo ngôn ngữ nên phải
 // dò vài biến thể; trả về null để chỗ gọi tự quyết định ném lỗi hay bỏ qua.
 async function findSoundSearchInput(page, log) {
@@ -4985,6 +4989,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     if (initialized) break;
                 } catch (e) {
                     log(`Attempt ${attempt} failed: ${e.message}`);
+                    if (isBrowserGone(e)) throw e;
                     if (attempt < 3) {
                         await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => null);
                     }
@@ -5131,6 +5136,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 await dismissPopups(page);
             } catch (e) {
                 log(`Wait for upload completion timed out or failed: ${e.message}`);
+                if (isBrowserGone(e)) throw e;
             }
 
             // --- NEW TASKS: Clear Title & Add Sound ---
@@ -5156,6 +5162,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                 }
             } catch (e) {
                 log(`Clear title failed: ${e.message}`);
+                if (isBrowserGone(e)) throw e;
                 await page.screenshot({ path: path.join(__dirname, `debug_${profile.name}_task_fail.png`) }).catch(() => null);
             }
             // --- END CLEAR TITLE ---
@@ -5276,6 +5283,10 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     // định được bài nhạc thì phải ném tiếp: đăng nhầm nhạc là
                     // hỏng vĩnh viễn, còn dừng lượt thì chạy lại được.
                     if (e instanceof MusicNotResolvedError) throw e;
+                    // Bộ lọc trên đi theo LỚP lỗi, nên lỗi browser-đã-đóng —
+                    // vốn của Playwright — lọt qua và lượt chạy đi tiếp dù
+                    // không còn trang nào để thao tác.
+                    if (isBrowserGone(e)) throw e;
                 }
             } else {
                 log(`set_music tắt: bỏ qua Edit video và chọn nhạc.`);
@@ -5301,6 +5312,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     : 'Post button not ready within the settle window; continuing anyway.');
             } catch (uploadErr) {
                 log(`Warning/Error waiting for upload completion: ${uploadErr.message}`);
+                if (isBrowserGone(uploadErr)) throw uploadErr;
             }
 
             // --- TASK: Content Check Lite ---
@@ -5402,6 +5414,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     }
                 } catch (checkErr) {
                     log(`Error during Content check lite: ${checkErr.message}`);
+                    if (isBrowserGone(checkErr)) throw checkErr;
                     checkSuccess = false;
                 }
             } else {
@@ -5519,8 +5532,19 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     }
                 } catch (e) {
                     log(`Auto-increment scheduling failed: ${e.message}`);
+                    if (isBrowserGone(e)) throw e;
                     if (hasExistingSchedule || delayedStart) {
-                        log(`WARNING: video ${i + 1} will be posted immediately instead of being scheduled.`);
+                        // Trước đây chỗ này chỉ ghi một dòng WARNING rồi chạy
+                        // thẳng xuống khâu bấm Post — tức làm đúng cái việc mà
+                        // hai cờ này cấm. Lượt chạy 2026-09-08 của
+                        // user4586906149617 cho thấy hậu quả: trang trôi sang
+                        // /tiktokstudio/content giữa lúc chờ radio "Schedule",
+                        // lượt chạy vẫn đi tiếp, rồi nhận nhầm chính URL đó là
+                        // dấu hiệu đăng thành công và xoá mất file video.
+                        throw new ScheduleNotSetError(
+                            `Không đặt được lịch cho video ${i + 1} trong khi lượt chạy đã cam kết không đăng ngay ` +
+                            `(${hasExistingSchedule ? 'kênh còn loạt lịch cũ chưa chạy tới' : `hẹn giờ đăng +${postDelayMinutes} phút`}): ${e.message}`
+                        );
                     }
                 }
             } else if (!(limitUploads && uploadLimitCount === 1) && profile.is_scheduled && i >= 3) {
@@ -5569,6 +5593,13 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                     }
                 } catch (e) {
                     log(`Scheduling task failed: ${e.message}`);
+                    if (isBrowserGone(e)) throw e;
+                    // profile.is_scheduled bật nghĩa là người dùng chọn lên
+                    // lịch chứ không đăng ngay. Trượt khâu này mà vẫn bấm Post
+                    // thì video ra thẳng, y hệt nhánh auto-increment ở trên.
+                    throw new ScheduleNotSetError(
+                        `Không đặt được lịch cho video ${i + 1} dù profile đang bật lên lịch: ${e.message}`
+                    );
                 }
             }
             // --- END TASK 3 ---
@@ -5577,14 +5608,18 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             let clickedPost = false;
             let capturedVideoId = null;
 
-            // Intercept TikTok API responses to capture the video ID
+            // Chỉ nghe những endpoint có nghĩa "vừa đăng xong", không nghe
+            // endpoint liệt kê. Bộ lọc cũ nhận cả `/item`, mà
+            // /manage/item_list/v1/ chính là danh sách video ĐÃ CÓ trên kênh:
+            // lượt chạy 2026-09-08 của user4586906149617 vớ đúng ID của video
+            // trước từ đó rồi gắn cho video hiện tại, nên hai video liên tiếp
+            // nhận cùng một link. Một ID sai còn tệ hơn không có ID.
+            const PUBLISH_ENDPOINT = /\/(publish|create|project\/post)\b/;
             const responseHandler = async (response) => {
                 try {
                     const url = response.url();
                     const status = response.status();
-                    if (status >= 200 && status < 300 &&
-                        (url.includes('/publish') || url.includes('/create') || url.includes('/post') ||
-                         url.includes('/upload') || url.includes('/item'))) {
+                    if (status >= 200 && status < 300 && PUBLISH_ENDPOINT.test(url)) {
                         const contentType = response.headers()['content-type'] || '';
                         if (contentType.includes('json')) {
                             const text = await response.text().catch(() => '');
@@ -5612,6 +5647,15 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
             };
             page.on('response', responseHandler);
 
+            if (!page.url().includes('upload')) {
+                log(`WARNING: page is at ${page.url()} instead of the upload flow — there is nothing here to post.`);
+            }
+            // Chưa bấm được nút Post thì chưa có gì để mà thành công.
+            let everClicked = false;
+            // URL ngay trước cú bấm, để dấu hiệu "đã chuyển trang" có nghĩa
+            // thật là ĐÃ CHUYỂN chứ không phải "đang ở sẵn chỗ khác".
+            let urlBeforeClick = page.url();
+
             for (let clickAttempt = 0; clickAttempt < 10; clickAttempt++) {
                 await dismissPopups(page);
 
@@ -5632,6 +5676,7 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                 if (targetBtn) {
                     log(`Clicking Post button (Attempt ${clickAttempt + 1})...`);
+                    urlBeforeClick = page.url();
                     try {
                         // Strategy A: Real browser click
                         await targetBtn.click({ force: true, timeout: 5000 });
@@ -5639,7 +5684,10 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
                         // Strategy B: Evaluate click fallback
                         await targetBtn.evaluate(node => node.click()).catch(() => null);
                     }
+                    everClicked = true;
                     await dismissPopups(page);
+                } else {
+                    log(`No enabled Post button on this page (attempt ${clickAttempt + 1}/10).`);
                 }
 
                 // Success detection polling (Wait up to 15s per attempt)
@@ -5648,9 +5696,22 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
                     const postBtnGone = !await page.$('button:has-text("Post")');
                     const successMsg = await page.$('text="Uploaded", text="Success", text="View video", text="Manage your posts", text="Share video"');
-                    const redirected = !page.url().includes('upload') || page.url().includes('manage') || page.url().includes('content');
+                    // Thêm phép so với URL trước cú bấm: "đã chuyển trang" phải
+                    // là ĐÃ CHUYỂN. Trang nào đang nằm sẵn ở /tiktokstudio/
+                    // content từ trước thì thoả vế sau nhưng không thoả vế này.
+                    const redirected = page.url() !== urlBeforeClick &&
+                        (!page.url().includes('upload') || page.url().includes('manage') || page.url().includes('content'));
 
-                    if (postBtnGone || successMsg || redirected) {
+                    // Và cả ba dấu hiệu chỉ có nghĩa khi lượt này THẬT SỰ bấm
+                    // được nút Post. Trước đây chúng được xét vô điều kiện, nên
+                    // một trang đã trôi sang /content từ trước khi bấm cũng cho
+                    // `redirected = true` ngay vòng poll đầu — đúng cách video 2
+                    // của user4586906149617 ngày 08-09 được báo "Post confirmed"
+                    // dù chưa từng có cú bấm nào, rồi bị xoá file vì tưởng đã
+                    // đăng. Quét 14.470 lượt bấm Post trong automation.log thì
+                    // đó là ca duy nhất, nên chốt chặn này không đụng vào 14.353
+                    // lượt đăng đang chạy đúng.
+                    if (everClicked && (postBtnGone || successMsg || redirected)) {
                         log(`Post confirmed! (btnGone: ${postBtnGone}, msg: ${!!successMsg}, redirected: ${redirected})`);
                         clickedPost = true;
                         break;
@@ -5670,6 +5731,14 @@ async function uploadVideo(profile, videoFolder, videos, limitUploads = false, u
 
             // Remove the response listener
             page.removeListener('response', responseHandler);
+
+            if (!clickedPost) {
+                // Nói thẳng ra thay vì im lặng đi tiếp: file còn nguyên nên
+                // lượt sau nhặt lại được, nhưng người dùng phải biết video này
+                // chưa lên.
+                log(`WARNING: video ${i + 1} (${videoFileName}) was NOT posted — no Post click was ever confirmed. ` +
+                    `The file stays in ${videoFolder} and the next run will pick it up again.`);
+            }
 
             if (clickedPost) {
                 log(`Finalizing upload for ${videoFileName}...`);
