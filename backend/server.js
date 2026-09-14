@@ -4135,7 +4135,12 @@ async function runSingleProfile(profile, limitUploads = false, uploadLimitCount 
     } finally {
         runningProfiles.delete(profile.id);
         setTimeout(() => {
-            if (!runningProfiles.has(profile.id)) {
+            // Không đè 'idle' lên profile đã được xếp lại vào hàng đợi trong lúc
+            // chờ 30 giây này -- trước đây chỉ nhìn runningProfiles, nên một
+            // profile vừa được enqueueUploads() gắn 'queued' (nhưng chưa tới lượt
+            // pump ra runningProfiles) bị hẹn giờ này ghi đè về 'idle', trong khi
+            // nó vẫn nằm sẵn trong uploadQueue và sẽ tự chạy ngay khi có slot.
+            if (!runningProfiles.has(profile.id) && !queuedProfileIds.has(profile.id)) {
                 db.prepare('UPDATE profiles SET status = ? WHERE id = ?').run('idle', profile.id);
             }
         }, 30000);

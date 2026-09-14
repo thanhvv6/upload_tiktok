@@ -476,6 +476,16 @@ const App = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Safety net: nhiều nơi gọi setMessage() khi báo lỗi mà quên tự đặt setTimeout
+  // để dọn dẹp, khiến toast nằm mãi trên màn hình. Đảm bảo mọi message đều tự ẩn,
+  // với thời hạn dài hơn timeout tuỳ chỉnh dài nhất hiện có (12s) để không cắt ngắn
+  // các message cố ý hiển thị lâu hơn.
+  useEffect(() => {
+    if (!message) return;
+    const timer = setTimeout(() => setMessage(null), 15000);
+    return () => clearTimeout(timer);
+  }, [message]);
+
   useEffect(() => {
     const validIds = new Set(profiles.map((p) => p.id));
     setSelectedForRun((prev) => {
@@ -3583,19 +3593,17 @@ const App = () => {
               color: message.type === 'error' ? '#EF4444' : '#10B981',
               border: `1px solid ${message.type === 'error' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(16, 185, 129, 0.3)'}`,
               display: 'flex',
-              alignItems: 'center',
+              alignItems: 'flex-start',
               gap: '12px',
               zIndex: 2000,
               boxShadow: message.type === 'error'
                 ? '0 8px 32px rgba(239, 68, 68, 0.15)'
                 : '0 8px 32px rgba(16, 185, 129, 0.15)',
-              maxWidth: '420px',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis'
+              maxWidth: '480px',
+              wordBreak: 'break-word'
             }}
           >
-            {message.type === 'error' ? <AlertCircle size={18} /> : <CheckCircle2 size={18} />}
+            {message.type === 'error' ? <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} /> : <CheckCircle2 size={18} style={{ flexShrink: 0, marginTop: '2px' }} />}
             <span style={{ fontWeight: '600', fontSize: '0.9rem' }}>{message.text}</span>
           </motion.div>
         )}
